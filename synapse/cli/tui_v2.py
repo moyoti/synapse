@@ -547,7 +547,7 @@ class FullScreenTUI:
             text=_get_chat_text,
             style="class:chat",
             focusable=True,
-            get_cursor_position=lambda: Point(0, self._chat_window.vertical_scroll),
+            get_cursor_position=lambda: Point(0, self._get_cursor_y()),
         )
         self._chat_window = Window(
             content=self._chat_control,
@@ -630,6 +630,13 @@ class FullScreenTUI:
         """Append an error message to the chat."""
         self._chat_lines.append(("system", text))
         self._scroll_to_bottom()
+
+    def _get_cursor_y(self) -> int:
+        """Safe cursor Y for the scroll algorithm.  Clamped to content bounds."""
+        vs = getattr(self, '_chat_window', None)
+        scroll = vs.vertical_scroll if vs is not None else 0
+        max_y = max(0, self._content_line_count - 1)
+        return max(0, min(scroll, max_y))
 
     def _scroll_to_bottom(self):
         """Ensure the chat window shows the latest messages."""
