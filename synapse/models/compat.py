@@ -6,7 +6,7 @@ from typing import Any, AsyncIterator
 
 from openai import AsyncOpenAI
 
-from synapse.models.base import BaseProvider, ChatResponse
+from synapse.models.base import BaseProvider, ChatResponse, StreamChunk
 
 
 class OpenAICompatProvider(BaseProvider):
@@ -58,7 +58,7 @@ class OpenAICompatProvider(BaseProvider):
         messages: list[dict[str, str]],
         temperature: float = 0.7,
         max_tokens: int = 4096,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[StreamChunk]:
         client = self._get_client()
 
         stream = await client.chat.completions.create(
@@ -70,5 +70,11 @@ class OpenAICompatProvider(BaseProvider):
         )
 
         async for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            content = delta.content or ""
+            # DeepSeek R1 / reasoning models expose reasoning_content
+            reasoning = getattr(delta, "reasoning_content", None) or ""
+            if content or reasoning:
+                yield StreamChunk(content=content, reasoning=reasoning)

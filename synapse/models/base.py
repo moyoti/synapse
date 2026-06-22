@@ -14,12 +14,26 @@ class ChatResponse:
     content: str
     model: str = ""
     finish_reason: str = "stop"
-    usage: dict[str, int] = field(default_factory=dict)  # {prompt_tokens, completion_tokens, total_tokens}
-    raw: Any = None  # Raw provider response for debugging
+    usage: dict[str, int] = field(default_factory=dict)
+    raw: Any = None
 
     @property
     def total_tokens(self) -> int:
         return self.usage.get("total_tokens", 0)
+
+
+@dataclass
+class StreamChunk:
+    """A single streaming token from a provider.
+
+    For models that support reasoning/thinking (DeepSeek R1, Claude
+    extended thinking, Gemini 2.5 thinking), the `reasoning` field
+    contains the model's internal thought process. Otherwise it's
+    empty and `content` holds the normal output.
+    """
+
+    content: str = ""
+    reasoning: str = ""
 
 
 class BaseProvider(ABC):
@@ -63,8 +77,12 @@ class BaseProvider(ABC):
         messages: list[dict[str, str]],
         temperature: float = 0.7,
         max_tokens: int = 4096,
-    ) -> AsyncIterator[str]:
-        """Stream chat completion tokens as an async iterator."""
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream chat completion tokens as an async iterator.
+
+        Each item is a StreamChunk that may contain reasoning/thinking
+        content in addition to the normal response text.
+        """
 
     def count_tokens(self, text: str) -> int:
         """Estimate token count. Override for provider-specific counting."""

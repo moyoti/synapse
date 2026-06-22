@@ -6,7 +6,7 @@ from typing import AsyncIterator
 
 from anthropic import AsyncAnthropic
 
-from synapse.models.base import BaseProvider, ChatResponse
+from synapse.models.base import BaseProvider, ChatResponse, StreamChunk
 
 
 class AnthropicProvider(BaseProvider):
@@ -70,7 +70,7 @@ class AnthropicProvider(BaseProvider):
         messages: list[dict[str, str]],
         temperature: float = 0.7,
         max_tokens: int = 4096,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[StreamChunk]:
         client = AsyncAnthropic(api_key=self.api_key)
 
         system_msg = ""
@@ -81,7 +81,7 @@ class AnthropicProvider(BaseProvider):
             else:
                 api_messages.append(m)
 
-        kwargs = {
+        kwargs: dict = {
             "model": self.model_name,
             "messages": api_messages,
             "temperature": temperature,
@@ -91,5 +91,12 @@ class AnthropicProvider(BaseProvider):
             kwargs["system"] = system_msg
 
         async with client.messages.stream(**kwargs) as stream:
-            async for text in stream.text_stream:
-                yield text
+            async for event in stream:
+                if event.type == "content_block_delta":
+                    if event.delta.type == "text_delta":
+                        yield StreamChunk(content=event.delta.text)
+                    elif event.delta.type == "thinking_delta":
+                        yield StreamChunk(reasoning=event.delta.thinking)
+                elif event.type == "content_block_start":
+                    # Could yield a marker for thinking start, but skip for now
+                    pass

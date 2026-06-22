@@ -486,6 +486,7 @@ class ChatTUI:
         )
 
         full_text = ""
+        reasoning_text = ""
         model_name = self.session.model_name
 
         with Live(
@@ -494,11 +495,20 @@ class ChatTUI:
             transient=False,
             vertical_overflow="visible",
         ) as live:
-            async for token in stream:
-                full_text += token
+            async for chunk in stream:
+                if chunk.reasoning:
+                    reasoning_text += chunk.reasoning
+                if chunk.content:
+                    full_text += chunk.content
+
+                display = ""
+                if reasoning_text:
+                    display += f"[dim italic]🤔 Thinking...\n{reasoning_text}[/]\n\n"
+                display += full_text
+
                 live.update(
                     Panel(
-                        Markdown(full_text, code_theme="github-dark"),
+                        Markdown(display or "...", code_theme="github-dark"),
                         title=f"◉ {model_name}",
                         title_align="left",
                         border_style=Style(color=Colors.AI),

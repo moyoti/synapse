@@ -306,6 +306,7 @@ class FullScreenTUI:
         self._chat_lines: list[tuple[str, str]] = []  # (role, raw_text)
         # Streaming state
         self._streaming_text = ""
+        self._streaming_reasoning = ""
         self._is_streaming = False
 
         # Input — manual Buffer + BufferControl for proper completion menu
@@ -456,11 +457,19 @@ class FullScreenTUI:
                     parts.append(("", raw))
                 parts.append(("", "\n"))
 
-            if self._is_streaming and self._streaming_text:
+            if self._is_streaming and (self._streaming_text or self._streaming_reasoning):
                 # Live-streaming: render current accumulated text
-                stream_ansi = _render_markdown(self._streaming_text)
                 parts.append(("class:ai", f"◉ {self.session.model_name}\n"))
-                parts.extend(ANSI(stream_ansi).__pt_formatted_text__())
+                if self._streaming_reasoning:
+                    parts.append(("class:system", "🤔 Thinking...\n"))
+                    reasoning_ansi = _render_markdown(self._streaming_reasoning, width=tw)
+                    parts.extend(ANSI(reasoning_ansi).__pt_formatted_text__())
+                    if self._streaming_text:
+                        parts.append(("", "\n"))
+                        parts.append(("class:separator", "─" * 40 + "\n"))
+                if self._streaming_text:
+                    content_ansi = _render_markdown(self._streaming_text, width=tw)
+                    parts.extend(ANSI(content_ansi).__pt_formatted_text__())
 
             if not parts:
                 # Show welcome message
@@ -571,11 +580,14 @@ class FullScreenTUI:
     # ── Streaming ─────────────────────────────────────────────────────
 
     async def _stream_response(self, user_input: str):
-        """Stream AI response into the chat window in real-time."""
-        # Note: user message already added by caller
+        """Stream AI response into the chat window in real-time.
 
+        Handles reasoning/thinking tokens (DeepSeek R1, Claude thinking, etc.)
+        by displaying them in a dimmed collapsible section before the response.
+        """
         self._is_streaming = True
         self._streaming_text = ""
+        self._streaming_reasoning = ""
         self._cancel_streaming = False
 
         app = get_app()
@@ -587,13 +599,17 @@ class FullScreenTUI:
                 max_tokens=self.session.max_tokens,
             )
 
-            last_refresh = 0
-            async for token in stream:
+            last_refresh = 0.0
+            async for chunk in stream:
                 if self._cancel_streaming:
                     self._add_system_message("[Streaming cancelled]")
                     break
 
-                self._streaming_text += token
+                # Separate reasoning from content
+                if chunk.reasoning:
+                    self._streaming_reasoning += chunk.reasoning
+                if chunk.content:
+                    self._streaming_text += chunk.content
 
                 # Throttle refreshes to ~15 fps
                 import time
@@ -606,10 +622,18 @@ class FullScreenTUI:
             self._add_error(f"Stream error: {e}")
         finally:
             self._is_streaming = False
+            reasoning = self._streaming_reasoning
             full_text = self._streaming_text
+            self._streaming_reasoning = ""
             self._streaming_text = ""
 
             if full_text:
+                # If there was reasoning, prepend it as a dimmed block
+                if reasoning:
+                    full_text = (
+                        f"<details><summary>🤔 Thinking</summary>\n\n"
+                        f"{reasoning}\n\n</details>\n\n{full_text}"
+                    )
                 self.session.messages.append(
                     {"role": "assistant", "content": full_text}
                 )

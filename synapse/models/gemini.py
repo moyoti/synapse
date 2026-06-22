@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import AsyncIterator
 
-from synapse.models.base import BaseProvider, ChatResponse
+from synapse.models.base import BaseProvider, ChatResponse, StreamChunk
 
 try:
     from google import genai
@@ -80,9 +80,9 @@ class GeminiProvider(BaseProvider):
         messages: list[dict[str, str]],
         temperature: float = 0.7,
         max_tokens: int = 4096,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[StreamChunk]:
         if not HAS_GOOGLE:
-            yield "Error: google-genai not installed. Run: pip install google-genai"
+            yield StreamChunk(content="Error: google-genai not installed. Run: pip install google-genai")
             return
 
         client = genai.Client(api_key=self.api_key)
@@ -90,7 +90,6 @@ class GeminiProvider(BaseProvider):
         contents = []
         for m in messages:
             if m["role"] == "system":
-                # Gemini handles system messages differently
                 pass
             elif m["role"] == "user":
                 contents.append({"role": "user", "parts": [{"text": m["content"]}]})
@@ -107,7 +106,15 @@ class GeminiProvider(BaseProvider):
                 },
             )
             for chunk in response:
-                if chunk.text:
-                    yield chunk.text
+                # Gemini thinking models expose thought in candidates
+                if hasattr(chunk, 'candidates') and chunk.candidates:
+                    parts = getattr(chunk.candidates[0].content, 'parts', [])
+                    for part in parts:
+                        if hasattr(part, 'thought') and part.thought:
+                            yield StreamChunk(reasoning=str(part.thought))
+                        elif hasattr(part, 'text') and part.text:
+                            yield StreamChunk(content=part.text)
+                elif chunk.text:
+                    yield StreamChunk(content=chunk.text)
         except Exception as e:
-            yield f"Gemini API error: {e}"
+            yield StreamChunk(content=f"Gemini API error: {e}")
