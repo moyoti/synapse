@@ -483,6 +483,7 @@ class FullScreenTUI:
                     content=CompletionsMenu(
                         max_height=12,
                         scroll_offset=1,
+                        extra_filter=has_focus(self._input_buffer),
                     ),
                 ),
             ],
@@ -1068,8 +1069,14 @@ class FullScreenTUI:
 
             try:
                 result = await app.run_async()
-            except Exception:
-                result = "quit"
+            except Exception as exc:
+                # Surface the error so the user can see what went wrong
+                import traceback
+                self._running = False
+                print(f"\n✗ TUI crashed: {exc}")
+                traceback.print_exc()
+                print("\n(Report this bug at https://github.com/moyoti/synapse/issues)")
+                break
 
             if result == "quit" or not self._running:
                 break
