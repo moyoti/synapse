@@ -271,7 +271,7 @@ class ChatTUI:
 
     # ── Prompt (input) ───────────────────────────────────────────────
 
-    def _prompt(self) -> str:
+    async def _prompt(self) -> str:
         """Show the input prompt and return user input.
 
         Uses prompt_toolkit for live autocomplete dropdown with arrow-key
@@ -294,14 +294,17 @@ class ChatTUI:
 
         try:
             if _HAS_PROMPT_TOOLKIT:
-                user_input = pt_prompt(
-                    HTML("› "),  # prompt text
-                    completer=self._completer,
-                    history=self._history,
-                    style=_PT_STYLE,
-                    complete_while_typing=True,    # show dropdown as you type
-                    complete_in_thread=True,        # non-blocking completion
-                    reserve_space_for_menu=4,       # room for dropdown
+                # Run in a thread to avoid nested asyncio event loops
+                user_input = await asyncio.to_thread(
+                    lambda: pt_prompt(
+                        HTML("› "),
+                        completer=self._completer,
+                        history=self._history,
+                        style=_PT_STYLE,
+                        complete_while_typing=True,
+                        complete_in_thread=True,
+                        reserve_space_for_menu=4,
+                    )
                 )
             else:
                 prompt_str = "\033[38;2;88;166;255m› \033[0m"
@@ -798,7 +801,7 @@ class ChatTUI:
 
         while True:
             try:
-                user_input = self._prompt()
+                user_input = await self._prompt()
             except (EOFError, KeyboardInterrupt):
                 self.console.print()
                 self._print_system("Goodbye! 👋")
