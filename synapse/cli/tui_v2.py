@@ -172,12 +172,25 @@ class SlashCompleter(Completer):
 
 # ── ANSI rendering helpers ───────────────────────────────────────────
 
-def _render_markdown(text: str) -> str:
+def _get_terminal_width() -> int:
+    """Get current terminal width, suitable for Rich rendering."""
+    try:
+        from prompt_toolkit.application.current import get_app
+        app = get_app()
+        if app and app.output:
+            return app.output.get_size().columns
+    except Exception:
+        pass
+    return shutil.get_terminal_size().columns
+
+
+def _render_markdown(text: str, width: int | None = None) -> str:
     """Render markdown to ANSI string via rich."""
+    w = width or _get_terminal_width()
     console = RichConsole(
         force_terminal=True,
         color_system="truecolor",
-        width=120,
+        width=w,
         file=StringIO(),
     )
     with console.capture() as capture:
@@ -185,9 +198,10 @@ def _render_markdown(text: str) -> str:
     return capture.get().rstrip()
 
 
-def _render_user_message(text: str) -> str:
+def _render_user_message(text: str, width: int | None = None) -> str:
     """Render a user message to ANSI string."""
-    console = RichConsole(force_terminal=True, color_system="truecolor", width=120)
+    w = width or _get_terminal_width()
+    console = RichConsole(force_terminal=True, color_system="truecolor", width=w)
     with console.capture() as capture:
         console.print(
             RichText("▸ You", style="bold #79c0ff"),
@@ -196,25 +210,29 @@ def _render_user_message(text: str) -> str:
     return capture.get().rstrip()
 
 
-def _render_system_message(text: str) -> str:
+def _render_system_message(text: str, width: int | None = None) -> str:
     """Render a system message to ANSI string."""
-    console = RichConsole(force_terminal=True, color_system="truecolor", width=120)
+    w = width or _get_terminal_width()
+    console = RichConsole(force_terminal=True, color_system="truecolor", width=w)
     with console.capture() as capture:
         console.print(RichText(text, style="italic #8b949e"))
     return capture.get().rstrip()
 
 
-def _render_error(text: str) -> str:
+def _render_error(text: str, width: int | None = None) -> str:
     """Render an error message to ANSI string."""
-    console = RichConsole(force_terminal=True, color_system="truecolor", width=120)
+    w = width or _get_terminal_width()
+    console = RichConsole(force_terminal=True, color_system="truecolor", width=w)
     with console.capture() as capture:
         console.print(RichText(f"✗ {text}", style="bold #f78166"))
     return capture.get().rstrip()
 
 
-def _render_panel(text: str, title: str = "", border_style: str = "#30363d") -> str:
+def _render_panel(text: str, title: str = "", border_style: str = "#30363d",
+                  width: int | None = None) -> str:
     """Render text in a rich Panel to ANSI."""
-    console = RichConsole(force_terminal=True, color_system="truecolor", width=120)
+    w = width or _get_terminal_width()
+    console = RichConsole(force_terminal=True, color_system="truecolor", width=w)
     with console.capture() as capture:
         console.print(Panel(Markdown(text), title=title,
                           border_style=border_style, padding=(0, 1)))
@@ -285,7 +303,7 @@ class FullScreenTUI:
 
         # Chat messages: list of (role, raw_text, rendered_ansi)
         # role: "user", "assistant", "system"
-        self._chat_lines: list[tuple[str, str, str]] = []
+        self._chat_lines: list[tuple[str, str]] = []  # (role, raw_text)
         # Streaming state
         self._streaming_text = ""
         self._is_streaming = False
@@ -405,13 +423,20 @@ class FullScreenTUI:
         # ── Chat area ──
         def _get_chat_text():
             """Build the full chat display text from stored lines + streaming."""
-            # IMPORTANT: FormattedText must only contain (style, text) tuples,
-            # NOT ANSI/HTML objects. prompt_toolkit's to_formatted_text() will
-            # unpack items when applying style, and ANSI objects can't be unpacked.
+            # Render on-the-fly with current terminal width for responsiveness
+            tw = _get_terminal_width()
+
             parts: list = []
-            for role, raw, ansi in self._chat_lines:
-                if ansi:
-                    # ANSI.__pt_formatted_text__() → list of (style, text) tuples
+            for role, raw in self._chat_lines:
+                if role == "user":
+                    ansi = _render_user_message(raw, width=tw)
+                    parts.extend(ANSI(ansi).__pt_formatted_text__())
+                elif role == "assistant":
+                    ansi = _render_panel(raw, title=f"◉ {self.session.model_name}",
+                                         border_style="#7ee787", width=tw)
+                    parts.extend(ANSI(ansi).__pt_formatted_text__())
+                elif role == "system":
+                    ansi = _render_system_message(raw, width=tw)
                     parts.extend(ANSI(ansi).__pt_formatted_text__())
                 else:
                     parts.append(("", raw))
@@ -498,28 +523,23 @@ class FullScreenTUI:
     # ── Rendering API ─────────────────────────────────────────────────
 
     def _add_user_message(self, text: str):
-        """Append a user message to the chat and redraw."""
-        ansi = _render_user_message(text)
-        self._chat_lines.append(("user", text, ansi))
+        """Append a user message to the chat."""
+        self._chat_lines.append(("user", text))
         self._scroll_to_bottom()
 
     def _add_assistant_message(self, text: str):
         """Append a complete assistant message to the chat."""
-        ansi = _render_panel(text, title=f"◉ {self.session.model_name}",
-                             border_style="#7ee787")
-        self._chat_lines.append(("assistant", text, ansi))
+        self._chat_lines.append(("assistant", text))
         self._scroll_to_bottom()
 
     def _add_system_message(self, text: str):
         """Append a system message to the chat."""
-        ansi = _render_system_message(text)
-        self._chat_lines.append(("system", text, ansi))
+        self._chat_lines.append(("system", text))
         self._scroll_to_bottom()
 
     def _add_error(self, text: str):
         """Append an error message to the chat."""
-        ansi = _render_error(text)
-        self._chat_lines.append(("system", text, ansi))
+        self._chat_lines.append(("system", text))
         self._scroll_to_bottom()
 
     def _scroll_to_bottom(self):
@@ -591,7 +611,7 @@ class FullScreenTUI:
         return RichConsole(
             force_terminal=True,
             color_system="truecolor",
-            width=100,
+            width=_get_terminal_width(),
             file=buffer,
             record=True,
         ), buffer
