@@ -246,6 +246,24 @@ def _render_panel(text: str, title: str = "", border_style: str = "#30363d",
     return capture.get().rstrip()
 
 
+# ── ClampedScrollWindow ───────────────────────────────────────────────
+
+class _ClampedScrollWindow(Window):
+    """Window whose vertical_scroll is clamped to valid content bounds.
+
+    prompt_toolkit's _scroll_without_linewrapping may leave
+    vertical_scroll negative or beyond the last line.  We let the
+    algorithm run, then clamp afterwards so the user can never scroll
+    past the top or bottom — via keyboard, mouse, trackpad, or scrollbar.
+    """
+
+    def _scroll(self, ui_content, width, height):
+        super()._scroll(ui_content, width, height)
+        # Clamp: never below 0, never past the last line
+        max_scroll = max(0, ui_content.line_count - height)
+        self.vertical_scroll = max(0, min(self.vertical_scroll, max_scroll))
+
+
 # ── ChatSession (reused from original tui) ───────────────────────────
 
 class ChatSession:
@@ -406,11 +424,14 @@ class FullScreenTUI:
         @self._kb.add("up", filter=has_focus(self._chat_window))
         def _(event):
             self._chat_window.vertical_scroll = max(
-                0, self._chat_window.vertical_scroll - 1)
+                0, self._chat_window.vertical_scroll - self._scroll_step())
 
         @self._kb.add("down", filter=has_focus(self._chat_window))
         def _(event):
-            self._chat_window.vertical_scroll += 1
+            self._chat_window.vertical_scroll = min(
+                self._chat_window.vertical_scroll + self._scroll_step(),
+                self._max_scroll(),
+            )
 
         @self._kb.add("pageup", filter=has_focus(self._chat_window))
         def _(event):
@@ -422,8 +443,10 @@ class FullScreenTUI:
 
         @self._kb.add("pagedown", filter=has_focus(self._chat_window))
         def _(event):
-            self._chat_window.vertical_scroll += (
-                event.app.renderer.output.get_size().rows // 2
+            self._chat_window.vertical_scroll = min(
+                self._chat_window.vertical_scroll
+                + event.app.renderer.output.get_size().rows // 2,
+                self._max_scroll(),
             )
 
         @self._kb.add("home", filter=has_focus(self._chat_window))
@@ -438,21 +461,27 @@ class FullScreenTUI:
         @self._kb.add("c-up")
         def _(event):
             self._chat_window.vertical_scroll = max(
-                0, self._chat_window.vertical_scroll - 5)
+                0, self._chat_window.vertical_scroll - self._scroll_step() * 5)
 
         @self._kb.add("c-down")
         def _(event):
-            self._chat_window.vertical_scroll += 5
+            self._chat_window.vertical_scroll = min(
+                self._chat_window.vertical_scroll + self._scroll_step() * 5,
+                self._max_scroll(),
+            )
 
         # Vi-style: j/k scroll when chat is focused (Escape to focus first)
         @self._kb.add("j", filter=has_focus(self._chat_window))
         def _(event):
-            self._chat_window.vertical_scroll += 1
+            self._chat_window.vertical_scroll = min(
+                self._chat_window.vertical_scroll + self._scroll_step(),
+                self._max_scroll(),
+            )
 
         @self._kb.add("k", filter=has_focus(self._chat_window))
         def _(event):
             self._chat_window.vertical_scroll = max(
-                0, self._chat_window.vertical_scroll - 1)
+                0, self._chat_window.vertical_scroll - self._scroll_step())
 
         @self._kb.add("i", filter=has_focus(self._chat_window))
         def _(event):
@@ -549,7 +578,7 @@ class FullScreenTUI:
             focusable=True,
             get_cursor_position=lambda: Point(0, self._get_cursor_y()),
         )
-        self._chat_window = Window(
+        self._chat_window = _ClampedScrollWindow(
             content=self._chat_control,
             wrap_lines=False,
             always_hide_cursor=True,
@@ -638,17 +667,22 @@ class FullScreenTUI:
         max_y = max(0, self._content_line_count - 1)
         return max(0, min(scroll, max_y))
 
-    def _scroll_to_bottom(self):
-        """Ensure the chat window shows the latest messages."""
-        # Estimate chat area height (total rows minus header/separator/hints/input)
+    def _scroll_step(self) -> int:
+        """Lines to scroll per tick — 1 for fine-grained, 3 if holding key."""
+        return 1
+
+    def _max_scroll(self) -> int:
+        """Maximum valid vertical_scroll (so the last line is always visible)."""
         try:
             rows = get_app().renderer.output.get_size().rows
-            chat_height = max(1, rows - 4)  # 4 ≈ header + separator + hints + input
-            self._chat_window.vertical_scroll = max(
-                0, self._content_line_count - chat_height
-            )
+            chat_h = max(1, rows - 4)
         except Exception:
-            self._chat_window.vertical_scroll = 999_999
+            chat_h = 20
+        return max(0, self._content_line_count - chat_h)
+
+    def _scroll_to_bottom(self):
+        """Ensure the chat window shows the latest messages."""
+        self._chat_window.vertical_scroll = self._max_scroll()
 
     def _clear_chat(self):
         """Clear all visible messages (keep system prompt)."""
