@@ -128,17 +128,20 @@ _HISTORY_FILE = Path.home() / ".synapse" / ".chat_history"
 
 # ── prompt_toolkit autocomplete style ─────────────────────────────────
 
-_PT_STYLE = PTStyle.from_dict({
-    # Dropdown menu
-    "completion-menu": "bg:#161b22 #e6edf3",
-    "completion-menu.completion": "bg:#161b22 #58a6ff",
-    "completion-menu.completion.current": "bg:#1f6feb #ffffff bold",
-    # Scrollbar
-    "scrollbar.background": "bg:#30363d",
-    "scrollbar.button": "bg:#58a6ff",
-    # Meta text (description shown next to completion)
-    "completion-menu.completion.meta": "bg:#161b22 #8b949e italic",
-})
+if _HAS_PROMPT_TOOLKIT:
+    _PT_STYLE = PTStyle.from_dict({
+        # Dropdown menu
+        "completion-menu": "bg:#161b22 #e6edf3",
+        "completion-menu.completion": "bg:#161b22 #58a6ff",
+        "completion-menu.completion.current": "bg:#1f6feb #ffffff bold",
+        # Scrollbar
+        "scrollbar.background": "bg:#30363d",
+        "scrollbar.button": "bg:#58a6ff",
+        # Meta text (description shown next to completion)
+        "completion-menu.completion.meta": "bg:#161b22 #8b949e italic",
+    })
+else:
+    _PT_STYLE = None
 
 
 def _build_completer():
