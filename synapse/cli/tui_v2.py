@@ -389,7 +389,36 @@ class FullScreenTUI:
             """Escape focuses the chat window for scrolling."""
             event.app.layout.focus(self._chat_window)
 
-        @self._kb.add("i", filter=~has_focus(self._input_buffer))
+        # ── Chat scrolling (only when chat window has focus) ──
+        @self._kb.add("up", filter=has_focus(self._chat_window))
+        def _(event):
+            self._chat_window.vertical_scroll -= 1
+
+        @self._kb.add("down", filter=has_focus(self._chat_window))
+        def _(event):
+            self._chat_window.vertical_scroll += 1
+
+        @self._kb.add("pageup", filter=has_focus(self._chat_window))
+        def _(event):
+            self._chat_window.vertical_scroll -= (
+                event.app.renderer.output.get_size().rows // 2
+            )
+
+        @self._kb.add("pagedown", filter=has_focus(self._chat_window))
+        def _(event):
+            self._chat_window.vertical_scroll += (
+                event.app.renderer.output.get_size().rows // 2
+            )
+
+        @self._kb.add("home", filter=has_focus(self._chat_window))
+        def _(event):
+            self._chat_window.vertical_scroll = 0
+
+        @self._kb.add("end", filter=has_focus(self._chat_window))
+        def _(event):
+            self._chat_window.vertical_scroll = 999_999  # scroll to bottom
+
+        @self._kb.add("i", filter=has_focus(self._chat_window))
         def _(event):
             """Press 'i' to focus input from chat view."""
             event.app.layout.focus(self._input_line)
