@@ -281,17 +281,22 @@ class ChatTUI:
 
         shortcuts = [
             ("/help", "Show all commands"),
-            ("/model", "Switch AI model"),
-            ("/mode", "Change mode (single/debate/pipeline)"),
-            ("/setup", "Add a new model"),
-            ("/remember", "Save facts to memory"),
-            ("/recall", "Search memories"),
+            ("/model <name>", "Switch AI model"),
+            ("/setup", "Add a new model (guided)"),
+            ("/mode <name>", "Change mode (single/debate/pipeline)"),
+            ("/remember <text>", "Save facts to memory"),
+            ("/recall <query>", "Search memories"),
             ("Ctrl+C", "Interrupt / exit"),
         ]
 
         for key, desc in shortcuts:
             welcome.append(f"  {key:<18}", style=Colors.ACCENT_STYLE)
             welcome.append(f"{desc}\n", style=Colors.DIM)
+
+        welcome.append("\n", style=Colors.DIM)
+        welcome.append("💡 Just type ", style=Colors.DIM)
+        welcome.append("/setup", style=Style(color=Colors.ACCENT2, bold=True))
+        welcome.append(" to connect a new model — I'll guide you step by step.", style=Colors.DIM)
 
         return Panel(
             welcome,
@@ -339,6 +344,27 @@ class ChatTUI:
     def _print_divider(self, text: str = ""):
         self.console.print(self._render_divider(text))
 
+    @staticmethod
+    def _detect_add_model_intent(text: str) -> bool:
+        """Detect if the user is asking how to add/configure a new model."""
+        text_lower = text.lower().strip().rstrip("?.!。？！")
+        patterns = [
+            # English
+            "add model", "new model", "add a model", "add another model",
+            "connect model", "configure model", "setup model", "set up model",
+            "how to add", "how do i add", "how can i add",
+            "add provider", "add llm", "add ai",
+            # Chinese
+            "添加模型", "新增模型", "加模型", "增加模型",
+            "怎么添加", "如何添加", "怎样添加", "如何接入",
+            "添加一个模型", "再加一个模型",
+            "接入模型", "配置模型", "连接模型",
+        ]
+        for p in patterns:
+            if p in text_lower:
+                return True
+        return False
+
     # ── Input ────────────────────────────────────────────────────────
 
     def _prompt(self) -> str:
@@ -353,7 +379,7 @@ class ChatTUI:
         hints.append("  ", style=Colors.DIM)
         hints.append("/model", style=Style(color=Colors.MUTED))
         hints.append("  ", style=Colors.DIM)
-        hints.append("/mode", style=Style(color=Colors.MUTED))
+        hints.append("/setup", style=Style(color=Colors.MUTED))
         hints.append("  ", style=Colors.DIM)
         hints.append("/clear", style=Style(color=Colors.MUTED))
         hints.append("  ", style=Colors.DIM)
@@ -722,6 +748,16 @@ class ChatTUI:
                 elif result == "clear":
                     self.console.clear()
                     self._print_header_and_history()
+                continue
+
+            # Smart suggestion: detect when user asks about adding models
+            if self._detect_add_model_intent(user_input):
+                self._print_system(
+                    "💡 [bold]You can add a new model right here![/bold]\n"
+                    "Just type [bold green]/setup[/bold green] and I'll guide you through it — "
+                    "pick a provider, enter your API key, and you're ready to go.\n"
+                    "[dim]Type /setup now, or just ask me a question.[/dim]"
+                )
                 continue
 
             # Normal chat
