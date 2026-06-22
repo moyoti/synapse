@@ -12,13 +12,18 @@ from __future__ import annotations
 
 import asyncio
 import os
-import readline
 import shutil
 import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+# Prefer GNU readline on macOS (better completion support)
+try:
+    import gnureadline as readline
+except ImportError:
+    import readline
 
 from rich.align import Align
 from rich.box import Box, HEAVY, ROUNDED, SIMPLE
@@ -161,6 +166,8 @@ def _setup_readline():
 
     readline.set_completer(completer)
     readline.set_completion_display_matches_hook(display_matches)
+    # Only whitespace as word delimiters — preserves leading '/' for slash commands
+    readline.set_completer_delims(" \t\n")
     readline.parse_and_bind("tab: complete")
     readline.set_history_length(1000)
 
