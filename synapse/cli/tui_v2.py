@@ -29,12 +29,17 @@ from prompt_toolkit import Application
 from prompt_toolkit.application.current import get_app
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.data_structures import Point
 from prompt_toolkit.filters import has_focus
 from prompt_toolkit.formatted_text import ANSI, HTML, FormattedText
 from prompt_toolkit.history import FileHistory as PTFileHistory
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import Float, FloatContainer, HSplit, Layout, VSplit, Window
+from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
+from prompt_toolkit.key_binding.bindings.mouse import load_mouse_bindings
+from prompt_toolkit.layout import (
+    Float, FloatContainer, HSplit, Layout, VSplit, Window,
+)
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.styles import Style as PTStyle
 
@@ -83,8 +88,9 @@ _STYLE = PTStyle.from_dict({
     "completion-menu.completion": "bg:#161b22 #58a6ff",
     "completion-menu.completion.current": "bg:#1f6feb #ffffff bold",
     "completion-menu.completion.meta": "bg:#161b22 #8b949e italic",
-    "scrollbar.background": "bg:#30363d",
-    "scrollbar.button": "bg:#58a6ff",
+    "scrollbar.background": "bg:#21262d",
+    "scrollbar.button": "bg:#484f58",
+    "scrollbar.arrow": "#8b949e",
 })
 
 # ── Slash command list ───────────────────────────────────────────────
@@ -310,6 +316,9 @@ class FullScreenTUI:
         self._streaming_reasoning = ""
         self._is_streaming = False
 
+        # Line count for scroll-to-bottom calculation
+        self._content_line_count = 0
+
         # Input — manual Buffer + BufferControl for proper completion menu
         # (TextArea creates its own nested FloatContainer which conflicts
         #  with our outer FloatContainer, preventing the completion float
@@ -342,6 +351,9 @@ class FullScreenTUI:
             self._prompt_window,
             self._input_window,
         ])
+
+        # Build layout (must come before key bindings that reference _chat_window)
+        self._build_layout()
 
         # Key bindings
         self._kb = KeyBindings()
@@ -393,7 +405,8 @@ class FullScreenTUI:
         # ── Chat scrolling (only when chat window has focus) ──
         @self._kb.add("up", filter=has_focus(self._chat_window))
         def _(event):
-            self._chat_window.vertical_scroll -= 1
+            self._chat_window.vertical_scroll = max(
+                0, self._chat_window.vertical_scroll - 1)
 
         @self._kb.add("down", filter=has_focus(self._chat_window))
         def _(event):
@@ -401,8 +414,10 @@ class FullScreenTUI:
 
         @self._kb.add("pageup", filter=has_focus(self._chat_window))
         def _(event):
-            self._chat_window.vertical_scroll -= (
-                event.app.renderer.output.get_size().rows // 2
+            self._chat_window.vertical_scroll = max(
+                0,
+                self._chat_window.vertical_scroll
+                - event.app.renderer.output.get_size().rows // 2,
             )
 
         @self._kb.add("pagedown", filter=has_focus(self._chat_window))
@@ -417,7 +432,27 @@ class FullScreenTUI:
 
         @self._kb.add("end", filter=has_focus(self._chat_window))
         def _(event):
-            self._chat_window.vertical_scroll = 999_999  # scroll to bottom
+            self._scroll_to_bottom()
+
+        # ── Keyboard scroll (no focus required) ──
+        @self._kb.add("c-up")
+        def _(event):
+            self._chat_window.vertical_scroll = max(
+                0, self._chat_window.vertical_scroll - 5)
+
+        @self._kb.add("c-down")
+        def _(event):
+            self._chat_window.vertical_scroll += 5
+
+        # Vi-style: j/k scroll when chat is focused (Escape to focus first)
+        @self._kb.add("j", filter=has_focus(self._chat_window))
+        def _(event):
+            self._chat_window.vertical_scroll += 1
+
+        @self._kb.add("k", filter=has_focus(self._chat_window))
+        def _(event):
+            self._chat_window.vertical_scroll = max(
+                0, self._chat_window.vertical_scroll - 1)
 
         @self._kb.add("i", filter=has_focus(self._chat_window))
         def _(event):
@@ -435,9 +470,6 @@ class FullScreenTUI:
         self._pending_input: str | None = None
         self._cancel_streaming = False
         self._running = True
-
-        # Build layout
-        self._build_layout()
 
     def _build_layout(self):
         """Build the prompt_toolkit Layout with header, chat, and input."""
@@ -468,7 +500,6 @@ class FullScreenTUI:
         # ── Chat area ──
         def _get_chat_text():
             """Build the full chat display text from stored lines + streaming."""
-            # Render on-the-fly with current terminal width for responsiveness
             tw = _get_terminal_width()
 
             parts: list = []
@@ -488,7 +519,6 @@ class FullScreenTUI:
                 parts.append(("", "\n"))
 
             if self._is_streaming and (self._streaming_text or self._streaming_reasoning):
-                # Live-streaming: render current accumulated text
                 parts.append(("class:ai", f"◉ {self.session.model_name}\n"))
                 if self._streaming_reasoning:
                     parts.append(("class:system", "🤔 Thinking...\n"))
@@ -502,10 +532,14 @@ class FullScreenTUI:
                     parts.extend(ANSI(content_ansi).__pt_formatted_text__())
 
             if not parts:
-                # Show welcome message
                 parts.append(("class:system",
                               "Welcome to Synapse! Type a message to start.\n"
                               "  /help — show commands  |  /setup — add models  |  /quit — exit"))
+
+            # Track line count for scroll-to-bottom
+            self._content_line_count = sum(
+                1 for (_s, t) in parts for _c in t if _c == "\n"
+            ) + 1
 
             return FormattedText(parts)
 
@@ -513,13 +547,15 @@ class FullScreenTUI:
             text=_get_chat_text,
             style="class:chat",
             focusable=True,
+            get_cursor_position=lambda: Point(0, self._chat_window.vertical_scroll),
         )
         self._chat_window = Window(
             content=self._chat_control,
-            wrap_lines=True,
+            wrap_lines=False,
             always_hide_cursor=True,
             style="class:chat",
             allow_scroll_beyond_bottom=True,
+            right_margins=[ScrollbarMargin(display_arrows=True)],
         )
 
         # ── Separator ──
@@ -596,9 +632,16 @@ class FullScreenTUI:
         self._scroll_to_bottom()
 
     def _scroll_to_bottom(self):
-        """Ensure the chat window shows the latest message."""
-        # Force the window to scroll to bottom by moving cursor past end
-        pass  # prompt_toolkit handles this via allow_scroll_beyond_bottom
+        """Ensure the chat window shows the latest messages."""
+        # Estimate chat area height (total rows minus header/separator/hints/input)
+        try:
+            rows = get_app().renderer.output.get_size().rows
+            chat_height = max(1, rows - 4)  # 4 ≈ header + separator + hints + input
+            self._chat_window.vertical_scroll = max(
+                0, self._content_line_count - chat_height
+            )
+        except Exception:
+            self._chat_window.vertical_scroll = 999_999
 
     def _clear_chat(self):
         """Clear all visible messages (keep system prompt)."""
@@ -1249,7 +1292,7 @@ class FullScreenTUI:
             # Run the prompt_toolkit application to get input
             app = Application(
                 layout=self._layout,
-                key_bindings=self._kb,
+                key_bindings=merge_key_bindings([self._kb, load_mouse_bindings()]),
                 style=_STYLE,
                 full_screen=True,
                 mouse_support=True,
