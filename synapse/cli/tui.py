@@ -81,7 +81,7 @@ BUBBLE_BOX = Box(
 _HISTORY_FILE = Path.home() / ".synapse" / ".chat_history"
 
 def _setup_readline():
-    """Configure readline for a better input experience."""
+    """Configure readline with command auto-completion and rich menu display."""
     _HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     # History persistence
@@ -90,24 +90,77 @@ def _setup_readline():
     except (FileNotFoundError, OSError):
         pass
 
-    # Tab completion for slash commands
+    # ── Command registry with descriptions ──
     _COMMANDS = [
-        "/help", "/clear", "/quit", "/exit", "/q",
-        "/mode single", "/mode orchestrate", "/mode debate",
-        "/mode pipeline", "/mode auto",
-        "/model", "/role", "/setup", "/check", "/config",
-        "/remember", "/recall", "/facts", "/stats",
-        "/session save", "/session list",
+        ("/help", "Show all commands"),
+        ("/clear", "Clear chat history"),
+        ("/quit", "Exit chat"),
+        ("/exit", "Exit chat"),
+        ("/q", "Exit chat (shortcut)"),
+        ("/mode single", "Single model mode"),
+        ("/mode orchestrate", "Multi-agent orchestration"),
+        ("/mode debate", "Multi-perspective debate"),
+        ("/mode pipeline", "Sequential pipeline"),
+        ("/mode auto", "Auto-detect best mode"),
+        ("/model", "List or switch models"),
+        ("/model ", "Switch to a specific model"),
+        ("/role", "List or switch roles"),
+        ("/role ", "Switch to a specific role"),
+        ("/setup", "Add a new model (guided)"),
+        ("/check", "Check API key status"),
+        ("/config", "Show config summary"),
+        ("/remember ", "Save a fact to memory"),
+        ("/recall ", "Search memories"),
+        ("/facts", "Show stored facts"),
+        ("/stats", "Memory statistics"),
+        ("/session save ", "Save this conversation"),
+        ("/session list", "List saved sessions"),
     ]
 
+    # Build match-only list for completion
+    _COMMAND_NAMES = [c[0].rstrip() for c in _COMMANDS]
+
     def completer(text: str, state: int) -> str | None:
-        matches = [c for c in _COMMANDS if c.startswith(text)]
+        matches = [c for c in _COMMAND_NAMES if c.startswith(text)]
         try:
             return matches[state]
         except IndexError:
             return None
 
+    def display_matches(substitution, matches, longest_match_length):
+        """Rich-styled command menu shown on Tab press."""
+        console = Console()
+        console.print()  # newline before menu
+
+        # Build table grouped by category
+        table = Table(show_header=False, box=SIMPLE, padding=(0, 1))
+        table.add_column("cmd", style="bold cyan", width=22)
+        table.add_column("desc", style="dim")
+
+        # Show matching commands with descriptions
+        seen = set()
+        for cmd, desc in _COMMANDS:
+            base = cmd.rstrip()
+            if base in matches and base not in seen:
+                seen.add(base)
+                table.add_row(cmd, desc)
+
+        if not seen:
+            # Show all commands
+            for cmd, desc in _COMMANDS:
+                if not cmd.endswith(" "):  # show only base commands, not args variants
+                    table.add_row(cmd, desc)
+
+        # Also show a summary count
+        console.print(
+            Panel(table, title=f"[bold]Commands ({len(seen)} matches)[/bold]",
+                  border_style=Style(color="#30363d"), box=ROUNDED,
+                  subtitle="[dim]type to filter · Tab/→ to accept[/dim]",
+                  subtitle_align="right")
+        )
+
     readline.set_completer(completer)
+    readline.set_completion_display_matches_hook(display_matches)
     readline.parse_and_bind("tab: complete")
     readline.set_history_length(1000)
 
