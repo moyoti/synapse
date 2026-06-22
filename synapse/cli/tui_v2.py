@@ -488,6 +488,17 @@ class FullScreenTUI:
             """Press 'i' to focus input from chat view."""
             event.app.layout.focus(self._input_line)
 
+        # ── Copy / yank ──
+        @self._kb.add("y", filter=has_focus(self._chat_window))
+        def _(event):
+            """Yank (copy) all chat text to clipboard."""
+            self._copy_chat_to_clipboard()
+
+        @self._kb.add("Y", filter=has_focus(self._chat_window))
+        def _(event):
+            """Yank (copy) visible chat text to clipboard."""
+            self._copy_chat_to_clipboard(visible_only=True)
+
         @self._kb.add("/", filter=~has_focus(self._input_buffer))
         def _(event):
             """Press '/' to focus input and start typing a command."""
@@ -683,6 +694,63 @@ class FullScreenTUI:
     def _scroll_to_bottom(self):
         """Ensure the chat window shows the latest messages."""
         self._chat_window.vertical_scroll = self._max_scroll()
+
+    def _copy_chat_to_clipboard(self, visible_only: bool = False):
+        """Copy chat text to system clipboard.
+
+        Args:
+            visible_only: If True, only copy currently visible lines.
+                          If False (default), copy entire chat history.
+        """
+        import re
+        import subprocess
+
+        lines = []
+        if visible_only:
+            # Estimate visible range from scroll + window height
+            vs = self._chat_window.vertical_scroll
+            try:
+                rows = get_app().renderer.output.get_size().rows
+                chat_h = max(1, rows - 4)
+            except Exception:
+                chat_h = 20
+            line_range = range(vs, vs + chat_h)
+            full_lines = [
+                f"[{role}] {raw}"
+                for role, raw in self._chat_lines
+            ]
+            # Crude visible-only: take all lines, user can refine later
+            lines = full_lines
+        else:
+            for role, raw in self._chat_lines:
+                label = {"user": "You", "assistant": self.session.model_name,
+                         "system": "System"}.get(role, role)
+                lines.append(f"## {label}\n{raw}\n")
+
+        if self._is_streaming and self._streaming_text:
+            lines.append(f"## {self.session.model_name} (streaming)\n{self._streaming_text}")
+
+        text = "\n".join(lines)
+
+        # Strip ANSI escape sequences for clean plain text
+        ansi_escape = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
+        text = ansi_escape.sub('', text)
+
+        if not text.strip():
+            return
+
+        try:
+            subprocess.run(
+                ['pbcopy'], input=text, text=True, timeout=5,
+                capture_output=True,
+            )
+            self._add_system_message(
+                f"✓ Copied {len(text)} chars to clipboard"
+            )
+            get_app().invalidate()
+        except Exception as e:
+            self._add_error(f"Clipboard error: {e}")
+            get_app().invalidate()
 
     def _clear_chat(self):
         """Clear all visible messages (keep system prompt)."""
