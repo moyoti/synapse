@@ -429,10 +429,6 @@ class ChatTUI:
 
     def _prompt(self) -> str:
         """Show the input prompt and return user input."""
-        # Input bar styling
-        prompt_text = Text()
-        prompt_text.append("› ", style=Colors.ACCENT_STYLE)
-
         # Build hint line
         hints = Text("  ", style=Colors.DIM)
         hints.append("/help", style=Style(color=Colors.MUTED))
@@ -448,9 +444,10 @@ class ChatTUI:
 
         self.console.print(hints)
 
+        # Use input()'s built-in prompt so readline protects it from backspace
+        prompt_str = "\033[38;2;88;166;255m› \033[0m"  # Colors.ACCENT (#58a6ff)
         try:
-            self.console.print(prompt_text, end="")
-            user_input = input()
+            user_input = input(prompt_str)
             return user_input.strip()
         except (EOFError, KeyboardInterrupt):
             return ""
