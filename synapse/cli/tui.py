@@ -19,11 +19,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-# Prefer GNU readline on macOS (better completion support)
+# ── prompt_toolkit for rich autocomplete ─────────────────────────────
 try:
-    import gnureadline as readline
+    from prompt_toolkit import prompt as pt_prompt
+    from prompt_toolkit.completion import Completer, Completion
+    from prompt_toolkit.history import FileHistory as PTFileHistory
+    from prompt_toolkit.styles import Style as PTStyle
+    from prompt_toolkit.formatted_text import HTML
+    from prompt_toolkit.document import Document
+    _HAS_PROMPT_TOOLKIT = True
 except ImportError:
-    import readline
+    _HAS_PROMPT_TOOLKIT = False
+    import readline as _fallback_readline
 
 from rich.align import Align
 from rich.box import Box, HEAVY, ROUNDED, SIMPLE
@@ -74,113 +81,116 @@ class Colors:
     ERROR = Style(color=ACCENT4, bold=True)
 
 
-# ── Custom box for message bubbles ───────────────────────────────────
+# ── Command registry ──────────────────────────────────────────────────
 
-BUBBLE_BOX = Box(
-    "  ┌─\n  │ \n  │ \n  │ \n  │ \n  │ \n  │ \n  └─",
-    ascii=True,
-)
+# Full command list with descriptions for autocomplete
+_COMMANDS_WITH_META = [
+    ("/help", "Show all commands"),
+    ("/clear", "Clear chat history"),
+    ("/quit", "Exit chat"),
+    ("/exit", "Exit chat"),
+    ("/q", "Exit chat (shortcut)"),
+    ("/mode single", "Single model mode"),
+    ("/mode orchestrate", "Multi-agent orchestration"),
+    ("/mode debate", "Multi-perspective debate"),
+    ("/mode pipeline", "Sequential pipeline"),
+    ("/mode auto", "Auto-detect best mode"),
+    ("/model", "List or switch models"),
+    ("/role", "List or switch roles"),
+    ("/setup", "Add a new model (guided)"),
+    ("/check", "Check API key status"),
+    ("/config", "Show config summary"),
+    ("/remember", "Save a fact to memory"),
+    ("/recall", "Search memories"),
+    ("/facts", "Show stored facts"),
+    ("/stats", "Memory statistics"),
+    ("/session save", "Save this conversation"),
+    ("/session list", "List saved sessions"),
+]
 
-# ── Readline setup ───────────────────────────────────────────────────
+# Command names only (for fallback readline)
+_COMMAND_NAMES = [c[0] for c in _COMMANDS_WITH_META]
 
+# Nested structure for NestedCompleter-style typing (unused, kept for ref)
+_COMMAND_DICT = {
+    "/help": None, "/clear": None, "/quit": None, "/exit": None, "/q": None,
+    "/mode": {"single": None, "orchestrate": None, "debate": None, "pipeline": None, "auto": None},
+    "/model": None, "/role": None, "/setup": None, "/check": None, "/config": None,
+    "/remember": None, "/recall": None, "/facts": None, "/stats": None,
+    "/session": {"save": None, "list": None},
+}
+
+# Description map for fallback display
+_COMMAND_DESCRIPTIONS = dict(_COMMANDS_WITH_META)
+
+# History file
 _HISTORY_FILE = Path.home() / ".synapse" / ".chat_history"
 
-def _setup_readline():
-    """Configure readline with command auto-completion and rich menu display."""
-    _HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+# ── prompt_toolkit autocomplete style ─────────────────────────────────
 
-    # History persistence
+_PT_STYLE = PTStyle.from_dict({
+    # Dropdown menu
+    "completion-menu": "bg:#161b22 #e6edf3",
+    "completion-menu.completion": "bg:#161b22 #58a6ff",
+    "completion-menu.completion.current": "bg:#1f6feb #ffffff bold",
+    # Scrollbar
+    "scrollbar.background": "bg:#30363d",
+    "scrollbar.button": "bg:#58a6ff",
+    # Meta text (description shown next to completion)
+    "completion-menu.completion.meta": "bg:#161b22 #8b949e italic",
+})
+
+
+def _build_completer():
+    """Build a fuzzy-matching slash command completer with descriptions."""
+
+    class SlashCompleter(Completer):
+        def get_completions(self, document, complete_event):
+            text = document.text_before_cursor
+            if not text.startswith("/"):
+                return
+            for cmd, desc in _COMMANDS_WITH_META:
+                if cmd.startswith(text):
+                    yield Completion(
+                        cmd,
+                        start_position=-len(text),
+                        display_meta=desc,
+                    )
+
+    return SlashCompleter()
+
+
+# ── Fallback readline setup (when prompt_toolkit not available) ──────
+
+def _setup_readline_fallback():
+    """Readline-based completion as fallback."""
+    _HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
     try:
-        readline.read_history_file(str(_HISTORY_FILE))
+        _fallback_readline.read_history_file(str(_HISTORY_FILE))
     except (FileNotFoundError, OSError):
         pass
 
-    # ── Command registry with descriptions ──
-    _COMMANDS = [
-        ("/help", "Show all commands"),
-        ("/clear", "Clear chat history"),
-        ("/quit", "Exit chat"),
-        ("/exit", "Exit chat"),
-        ("/q", "Exit chat (shortcut)"),
-        ("/mode single", "Single model mode"),
-        ("/mode orchestrate", "Multi-agent orchestration"),
-        ("/mode debate", "Multi-perspective debate"),
-        ("/mode pipeline", "Sequential pipeline"),
-        ("/mode auto", "Auto-detect best mode"),
-        ("/model", "List or switch models"),
-        ("/model ", "Switch to a specific model"),
-        ("/role", "List or switch roles"),
-        ("/role ", "Switch to a specific role"),
-        ("/setup", "Add a new model (guided)"),
-        ("/check", "Check API key status"),
-        ("/config", "Show config summary"),
-        ("/remember ", "Save a fact to memory"),
-        ("/recall ", "Search memories"),
-        ("/facts", "Show stored facts"),
-        ("/stats", "Memory statistics"),
-        ("/session save ", "Save this conversation"),
-        ("/session list", "List saved sessions"),
-    ]
-
-    # Build match-only list for completion
-    _COMMAND_NAMES = [c[0].rstrip() for c in _COMMANDS]
-
-    def completer(text: str, state: int) -> str | None:
+    def _completer(text: str, state: int) -> str | None:
         matches = [c for c in _COMMAND_NAMES if c.startswith(text)]
         try:
             return matches[state]
         except IndexError:
             return None
 
-    def display_matches(substitution, matches, longest_match_length):
-        """Rich-styled command menu shown on Tab press."""
-        console = Console()
-        console.print()  # newline before menu
-
-        # Build table grouped by category
-        table = Table(show_header=False, box=SIMPLE, padding=(0, 1))
-        table.add_column("cmd", style="bold cyan", width=22)
-        table.add_column("desc", style="dim")
-
-        # Show matching commands with descriptions
-        seen = set()
-        for cmd, desc in _COMMANDS:
-            base = cmd.rstrip()
-            if base in matches and base not in seen:
-                seen.add(base)
-                table.add_row(cmd, desc)
-
-        if not seen:
-            # Show all commands
-            for cmd, desc in _COMMANDS:
-                if not cmd.endswith(" "):  # show only base commands, not args variants
-                    table.add_row(cmd, desc)
-
-        # Also show a summary count
-        console.print(
-            Panel(table, title=f"[bold]Commands ({len(seen)} matches)[/bold]",
-                  border_style=Style(color="#30363d"), box=ROUNDED,
-                  subtitle="[dim]type to filter · Tab/→ to accept[/dim]",
-                  subtitle_align="right")
-        )
-
-    readline.set_completer(completer)
-    readline.set_completion_display_matches_hook(display_matches)
-    # Only whitespace as word delimiters — preserves leading '/' for slash commands
-    readline.set_completer_delims(" \t\n")
-    readline.parse_and_bind("tab: complete")
-    readline.set_history_length(1000)
+    _fallback_readline.set_completer(_completer)
+    _fallback_readline.set_completer_delims(" \t\n")
+    _fallback_readline.parse_and_bind("tab: complete")
+    _fallback_readline.set_history_length(1000)
 
 
-def _save_history():
-    """Persist readline history."""
+def _save_history_fallback():
     try:
-        readline.write_history_file(str(_HISTORY_FILE))
+        _fallback_readline.write_history_file(str(_HISTORY_FILE))
     except OSError:
         pass
 
 
-# ── ChatSession (moved here for self-contained TUI) ──────────────────
+# ── ChatSession ──────────────────────────────────────────────────────
 
 class ChatSession:
     """Holds mutable chat state: model, role, mode, messages."""
@@ -249,7 +259,53 @@ class ChatTUI:
         # Display message history (rendered Panels)
         self._rendered_messages: list[RenderableType] = []
 
-        _setup_readline()
+        # Setup input method
+        if _HAS_PROMPT_TOOLKIT:
+            self._completer = _build_completer()
+            self._history = PTFileHistory(str(_HISTORY_FILE))
+        else:
+            _setup_readline_fallback()
+
+    # ── Prompt (input) ───────────────────────────────────────────────
+
+    def _prompt(self) -> str:
+        """Show the input prompt and return user input.
+
+        Uses prompt_toolkit for live autocomplete dropdown with arrow-key
+        navigation, falling back to readline if prompt_toolkit is unavailable.
+        """
+        # Build hint line
+        hints = Text("  ", style=Colors.DIM)
+        hints.append("/help", style=Style(color=Colors.MUTED))
+        hints.append("  ", style=Colors.DIM)
+        hints.append("/model", style=Style(color=Colors.MUTED))
+        hints.append("  ", style=Colors.DIM)
+        hints.append("/setup", style=Style(color=Colors.MUTED))
+        hints.append("  ", style=Colors.DIM)
+        hints.append("/clear", style=Style(color=Colors.MUTED))
+        hints.append("  ", style=Colors.DIM)
+        hints.append("/quit", style=Style(color=Colors.MUTED))
+        hints.append(" to exit", style=Colors.DIM)
+
+        self.console.print(hints)
+
+        try:
+            if _HAS_PROMPT_TOOLKIT:
+                user_input = pt_prompt(
+                    HTML("› "),  # prompt text
+                    completer=self._completer,
+                    history=self._history,
+                    style=_PT_STYLE,
+                    complete_while_typing=True,    # show dropdown as you type
+                    complete_in_thread=True,        # non-blocking completion
+                    reserve_space_for_menu=4,       # room for dropdown
+                )
+            else:
+                prompt_str = "\033[38;2;88;166;255m› \033[0m"
+                user_input = input(prompt_str)
+            return user_input.strip()
+        except (EOFError, KeyboardInterrupt):
+            return ""
 
     # ── Rendering helpers ────────────────────────────────────────────
 
@@ -261,7 +317,6 @@ class ChatTUI:
             "pipeline": "→", "auto": "◎",
         }.get(self.session.mode, "?")
 
-        # Build header text with segments
         segments = [
             ("🧠 Synapse", Colors.ACCENT_STYLE),
             ("  │", Colors.DIM),
@@ -276,7 +331,6 @@ class ChatTUI:
         for s, style in segments:
             text.append(s, style=style)
 
-        # Right-aligned version info
         text.append(" " * 4, style=Colors.DIM)
         text.append(f"v{__version__}", style=Colors.DIM)
 
@@ -288,7 +342,6 @@ class ChatTUI:
         )
 
     def _render_user_message(self, content: str) -> Panel:
-        """Render a user message bubble."""
         return Panel(
             Markdown(content, code_theme="github-dark"),
             title="▶ You",
@@ -299,7 +352,6 @@ class ChatTUI:
         )
 
     def _render_ai_message(self, content: str, model_name: str = "") -> Panel:
-        """Render an AI message bubble."""
         title = f"◉ {model_name}" if model_name else "◉ Synapse"
         return Panel(
             Markdown(content, code_theme="github-dark"),
@@ -311,7 +363,6 @@ class ChatTUI:
         )
 
     def _render_system_message(self, content: str) -> Panel:
-        """Render a system/status message."""
         return Panel(
             content,
             border_style=Colors.DIM,
@@ -320,7 +371,6 @@ class ChatTUI:
         )
 
     def _render_error(self, content: str) -> Panel:
-        """Render an error message."""
         return Panel(
             f"[bold red]Error:[/bold red] {content}",
             border_style=Style(color=Colors.ACCENT4),
@@ -328,12 +378,7 @@ class ChatTUI:
             padding=(0, 1),
         )
 
-    def _render_divider(self, text: str = "") -> Rule:
-        """Render a subtle divider."""
-        return Rule(text, style=Colors.DIM, align="left")
-
     def _render_empty_state(self) -> Panel:
-        """Render the welcome / empty state."""
         welcome = Text()
         welcome.append("🧠  Welcome to ", style=Colors.DIM)
         welcome.append("Synapse", style=Colors.ACCENT_STYLE)
@@ -369,7 +414,6 @@ class ChatTUI:
     # ── Display helpers ──────────────────────────────────────────────
 
     def _print_header_and_history(self):
-        """Print the header bar and all previous messages."""
         self.console.print(self._render_header())
 
         if not self._rendered_messages:
@@ -382,39 +426,30 @@ class ChatTUI:
             self.console.print()
 
     def _print_user_input(self, text: str):
-        """Display user's message in the chat."""
         panel = self._render_user_message(text)
         self._rendered_messages.append(panel)
         self.console.print(panel)
         self.console.print()
 
     def _print_ai_response(self, response: str):
-        """Add AI response to history and display."""
         panel = self._render_ai_message(response, self.session.model_name)
         self._rendered_messages.append(panel)
         self.console.print(panel)
         self.console.print()
 
     def _print_system(self, text: str):
-        """Print a system-level message."""
         panel = self._render_system_message(text)
         self.console.print(panel)
         self.console.print()
 
-    def _print_divider(self, text: str = ""):
-        self.console.print(self._render_divider(text))
-
     @staticmethod
     def _detect_add_model_intent(text: str) -> bool:
-        """Detect if the user is asking how to add/configure a new model."""
         text_lower = text.lower().strip().rstrip("?.!。？！")
         patterns = [
-            # English
             "add model", "new model", "add a model", "add another model",
             "connect model", "configure model", "setup model", "set up model",
             "how to add", "how do i add", "how can i add",
             "add provider", "add llm", "add ai",
-            # Chinese
             "添加模型", "新增模型", "加模型", "增加模型",
             "怎么添加", "如何添加", "怎样添加", "如何接入",
             "添加一个模型", "再加一个模型",
@@ -425,37 +460,9 @@ class ChatTUI:
                 return True
         return False
 
-    # ── Input ────────────────────────────────────────────────────────
-
-    def _prompt(self) -> str:
-        """Show the input prompt and return user input."""
-        # Build hint line
-        hints = Text("  ", style=Colors.DIM)
-        hints.append("/help", style=Style(color=Colors.MUTED))
-        hints.append("  ", style=Colors.DIM)
-        hints.append("/model", style=Style(color=Colors.MUTED))
-        hints.append("  ", style=Colors.DIM)
-        hints.append("/setup", style=Style(color=Colors.MUTED))
-        hints.append("  ", style=Colors.DIM)
-        hints.append("/clear", style=Style(color=Colors.MUTED))
-        hints.append("  ", style=Colors.DIM)
-        hints.append("/quit", style=Style(color=Colors.MUTED))
-        hints.append(" to exit", style=Colors.DIM)
-
-        self.console.print(hints)
-
-        # Use input()'s built-in prompt so readline protects it from backspace
-        prompt_str = "\033[38;2;88;166;255m› \033[0m"  # Colors.ACCENT (#58a6ff)
-        try:
-            user_input = input(prompt_str)
-            return user_input.strip()
-        except (EOFError, KeyboardInterrupt):
-            return ""
-
     # ── Streaming ────────────────────────────────────────────────────
 
     async def _stream_response(self, user_input: str) -> str:
-        """Stream AI response with a live-updating panel."""
         self.session.messages.append({"role": "user", "content": user_input})
 
         stream = self.session.provider.chat_stream(
@@ -492,7 +499,6 @@ class ChatTUI:
     # ── Command handling ─────────────────────────────────────────────
 
     async def _handle_command(self, cmd: str) -> str | None:
-        """Handle a slash command. Returns 'quit' to exit, 'clear' to refresh, None otherwise."""
         parts = cmd.split(maxsplit=1)
         verb = parts[0].lower()
         arg = parts[1] if len(parts) > 1 else ""
@@ -500,7 +506,7 @@ class ChatTUI:
         # ── Exit ──
         if verb in ("/quit", "/exit", "/q"):
             self._print_system("Goodbye! 👋")
-            _save_history()
+            self.close()
             return "quit"
 
         # ── Clear ──
@@ -697,7 +703,6 @@ class ChatTUI:
         return None
 
     def _print_help(self):
-        """Display the help panel."""
         help_table = Table(show_header=False, box=SIMPLE, padding=(0, 2))
         help_table.add_column("Command", style=Colors.ACCENT_STYLE)
         help_table.add_column("Description", style=Colors.DIM)
@@ -706,30 +711,25 @@ class ChatTUI:
         help_table.add_row("/clear", "Clear chat history")
         help_table.add_row("/mode <name>", "Switch mode: single|orchestrate|debate|pipeline|auto")
         help_table.add_row("", "")
-
         help_table.add_row("[bold]Model & Role[/bold]", "")
         help_table.add_row("/model [name]", "List or switch models")
         help_table.add_row("/role [name]", "List or switch roles")
         help_table.add_row("", "")
-
         help_table.add_row("[bold]Memory[/bold]", "")
         help_table.add_row("/remember <text>", "Save a fact to memory")
         help_table.add_row("/recall <query>", "Search memories")
         help_table.add_row("/facts", "Show stored facts")
         help_table.add_row("/stats", "Memory statistics")
         help_table.add_row("", "")
-
         help_table.add_row("[bold]Session[/bold]", "")
         help_table.add_row("/session save [title]", "Save conversation")
         help_table.add_row("/session list", "List saved sessions")
         help_table.add_row("", "")
-
         help_table.add_row("[bold]Config[/bold]", "")
         help_table.add_row("/setup", "Add a new model")
         help_table.add_row("/check", "Check API keys")
         help_table.add_row("/config", "Show config summary")
         help_table.add_row("", "")
-
         help_table.add_row("[bold]Other[/bold]", "")
         help_table.add_row("/quit, /exit, /q", "Exit chat")
 
@@ -739,7 +739,6 @@ class ChatTUI:
         self.console.print()
 
     def _list_models(self):
-        """Display available models in a table."""
         table = Table(title="Available Models", box=SIMPLE)
         table.add_column("Name", style=Colors.ACCENT_STYLE)
         table.add_column("Provider", style=Style(color=Colors.AI))
@@ -754,7 +753,6 @@ class ChatTUI:
         self.console.print()
 
     def _list_roles(self):
-        """Display available roles in a table."""
         table = Table(title="Available Roles", box=SIMPLE)
         table.add_column("Name", style=Colors.ACCENT_STYLE)
         table.add_column("Model", style=Style(color=Colors.AI))
@@ -801,13 +799,12 @@ class ChatTUI:
             except (EOFError, KeyboardInterrupt):
                 self.console.print()
                 self._print_system("Goodbye! 👋")
-                _save_history()
+                self.close()
                 break
 
             if not user_input:
                 continue
 
-            # Wrap all processing so Ctrl+C never exits the chat
             try:
                 # Slash command
                 if user_input.startswith("/"):
@@ -819,7 +816,7 @@ class ChatTUI:
                         self._print_header_and_history()
                     continue
 
-                # Smart suggestion: detect when user asks about adding models
+                # Smart suggestion
                 if self._detect_add_model_intent(user_input):
                     self._print_system(
                         "💡 [bold]You can add a new model right here![/bold]\n"
@@ -849,9 +846,7 @@ class ChatTUI:
                     result = await OrchestrationUI(self.session.config, console=self.console).run(user_input)
                     self._print_ai_response(result)
                 else:
-                    # Single mode — stream inline
                     response = await self._stream_response(user_input)
-                    # The stream already rendered via Live; add to history as rendered
                     panel = self._render_ai_message(response, self.session.model_name)
                     self._rendered_messages.append(panel)
                     self.console.print()
@@ -867,4 +862,5 @@ class ChatTUI:
 
     def close(self):
         """Cleanup resources."""
-        _save_history()
+        if not _HAS_PROMPT_TOOLKIT:
+            _save_history_fallback()

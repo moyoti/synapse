@@ -29,6 +29,7 @@ dependencies = [
     "openai>=1.30",
     "anthropic>=0.30",
     "gnureadline>=8.2; platform_system == 'Darwin'",
+    "prompt_toolkit>=3.0",
     "tiktoken>=0.7",
     "pyyaml>=6.0",
     "pydantic>=2.0",
