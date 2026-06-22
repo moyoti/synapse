@@ -97,6 +97,10 @@ _COMMANDS_WITH_META = [
     ("/mode auto", "Auto-detect best mode"),
     ("/model", "List or switch models"),
     ("/role", "List or switch roles"),
+    ("/roles", "Manage role → model assignments"),
+    ("/roles reassign", "Change a role's model"),
+    ("/roles add", "Create a custom role"),
+    ("/compact", "Compress conversation context"),
     ("/setup", "Add a new model (guided)"),
     ("/check", "Check API key status"),
     ("/config", "Show config summary"),
@@ -115,7 +119,7 @@ _COMMAND_NAMES = [c[0] for c in _COMMANDS_WITH_META]
 _COMMAND_DICT = {
     "/help": None, "/clear": None, "/quit": None, "/exit": None, "/q": None,
     "/mode": {"single": None, "orchestrate": None, "debate": None, "pipeline": None, "auto": None},
-    "/model": None, "/role": None, "/setup": None, "/check": None, "/config": None,
+    "/model": None, "/role": None, "/roles": {"add": None, "reassign": None}, "/compact": None, "/setup": None, "/check": None, "/config": None,
     "/remember": None, "/recall": None, "/facts": None, "/stats": None,
     "/session": {"save": None, "list": None},
 }
@@ -284,6 +288,10 @@ class ChatTUI:
         hints.append("/model", style=Style(color=Colors.MUTED))
         hints.append("  ", style=Colors.DIM)
         hints.append("/setup", style=Style(color=Colors.MUTED))
+        hints.append("  ", style=Colors.DIM)
+        hints.append("/roles", style=Style(color=Colors.MUTED))
+        hints.append("  ", style=Colors.DIM)
+        hints.append("/compact", style=Style(color=Colors.MUTED))
         hints.append("  ", style=Colors.DIM)
         hints.append("/clear", style=Style(color=Colors.MUTED))
         hints.append("  ", style=Colors.DIM)
@@ -628,6 +636,27 @@ class ChatTUI:
             return None
 
         # ── Setup / Config ──
+        if verb == "/compact":
+            await self._compact_context()
+            return None
+
+        if verb == "/roles":
+            self._show_role_mapping()
+
+            # Sub-commands: /roles add, /roles reassign
+            sub = arg.strip().lower() if arg else ""
+
+            if sub == "add":
+                await self._create_role()
+                return None
+            if sub == "reassign":
+                await self._reassign_roles()
+                return None
+
+            # Bare /roles → interactive menu
+            await self._role_menu()
+            return None
+
         if verb == "/setup":
             try:
                 from synapse.cli.onboarding import chat_setup
@@ -715,11 +744,15 @@ class ChatTUI:
 
         help_table.add_row("[bold]Conversation[/bold]", "")
         help_table.add_row("/clear", "Clear chat history")
+        help_table.add_row("/compact", "Compress conversation context")
         help_table.add_row("/mode <name>", "Switch mode: single|orchestrate|debate|pipeline|auto")
         help_table.add_row("", "")
         help_table.add_row("[bold]Model & Role[/bold]", "")
         help_table.add_row("/model [name]", "List or switch models")
         help_table.add_row("/role [name]", "List or switch roles")
+        help_table.add_row("/roles", "Manage role → model assignments")
+        help_table.add_row("/roles add", "Create a custom role")
+        help_table.add_row("/roles reassign", "Change a role's model")
         help_table.add_row("", "")
         help_table.add_row("[bold]Memory[/bold]", "")
         help_table.add_row("/remember <text>", "Save a fact to memory")
@@ -770,6 +803,287 @@ class ChatTUI:
             table.add_row(name, rc.model, rc.description, cur)
 
         self.console.print(table)
+        self.console.print()
+
+    async def _compact_context(self):
+        """Compress the current conversation history into a summary.
+
+        Uses the LLM to summarize all user/assistant messages, replaces the
+        message history with the system prompt + a compressed context block,
+        and auto-extracts persistent facts to memory.
+        """
+        from synapse.memory.compactor import Compactor
+
+        # Filter out system prompt for summarization
+        conversation_msgs = [
+            m for m in self.session.messages
+            if m.get("role") != "system"
+        ]
+
+        if len(conversation_msgs) < 4:
+            self._print_system(
+                "[yellow]Not enough conversation to compress.[/yellow] "
+                f"({len(conversation_msgs)} messages — need at least 4)"
+            )
+            return
+
+        original_count = len(conversation_msgs)
+
+        # Estimate tokens (rough: ~4 chars per token)
+        total_chars = sum(len(m.get("content", "")) for m in conversation_msgs)
+        estimated_tokens = total_chars // 4
+
+        self._print_system(
+            f"[dim]Compressing {original_count} messages "
+            f"(~{estimated_tokens} tokens)...[/dim]"
+        )
+
+        # Set up compactor with the current session's provider
+        provider = self.session.provider
+
+        async def _compact_chat(messages, temperature, max_tokens):
+            return await provider.chat(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+
+        compactor = Compactor(provider=None)
+        compactor._provider_fn = _compact_chat
+
+        try:
+            summary = await compactor.summarize(conversation_msgs)
+        except Exception as e:
+            self.console.print(self._render_error(f"Compression failed: {e}"))
+            return
+
+        if not summary:
+            self.console.print(self._render_error("Compression returned empty summary."))
+            return
+
+        # Auto-extract facts
+        try:
+            facts = await compactor.extract_facts(conversation_msgs, "default")
+            if facts:
+                from synapse.memory import MemoryAgent
+                agent = MemoryAgent(self.session.config)
+                for fd in facts:
+                    await agent.upsert_fact(
+                        key=fd.get("key", ""),
+                        value=str(fd.get("value", "")),
+                        namespace=fd.get("namespace", "global"),
+                        confidence=fd.get("confidence", 1.0),
+                    )
+        except Exception:
+            pass  # Facts are best-effort
+
+        # Rebuild messages: system prompt + compressed context
+        system_msgs = [
+            m for m in self.session.messages if m.get("role") == "system"
+        ]
+
+        context_block = (
+            "[上下文摘要 — 以下是你与此用户之前对话的压缩摘要，"
+            "请基于这些信息继续对话]\n\n"
+            f"{summary}"
+        )
+
+        self.session.messages = system_msgs + [
+            {"role": "assistant", "content": context_block}
+        ]
+
+        # Show summary to user
+        panel = Panel(
+            Markdown(summary),
+            title="[bold]Compressed Context[/bold]",
+            border_style=Colors.BORDER,
+            padding=(0, 1),
+        )
+        self.console.print(panel)
+        self.console.print()
+
+        new_chars = len(summary)
+        new_tokens = new_chars // 4
+        reduction = (
+            f"{original_count} messages → 1 summary | "
+            f"~{estimated_tokens} tokens → ~{new_tokens} tokens "
+            f"([green]{100 - new_tokens * 100 // max(estimated_tokens, 1)}%[/green] reduction)"
+        )
+
+        self._print_system(f"[green]✓ Context compressed![/green] {reduction}")
+        self._print_system(
+            "[dim]Continue chatting — the AI remembers the summarized context. "
+            "Type [bold]/session save[/bold] to persist to disk.[/dim]"
+        )
+
+    def _show_role_mapping(self):
+        """Display current role → model assignments."""
+        table = Table(title="Role → Model Mapping", box=SIMPLE)
+        table.add_column("Role", style=Colors.ACCENT_STYLE)
+        table.add_column("Current Model", style=Style(color=Colors.AI))
+        table.add_column("Purpose", style=Colors.DIM)
+
+        for name, rc in self.session.config.roles.items():
+            table.add_row(name, rc.model, rc.description or "—")
+
+        self.console.print(table)
+        self.console.print()
+
+    async def _role_menu(self):
+        """Interactive role management menu: reassign, create, or done."""
+        from synapse.cli.helpers import safe_ask
+        from synapse.config.loader import save_config
+
+        while True:
+            self.console.print()
+            action = safe_ask(
+                "What would you like to do?",
+                choices=["reassign", "create", "done"],
+                default="done",
+            )
+            if action == "done":
+                save_config(self.session.config)
+                self.session.config = load_synapse_config()
+                self._show_role_mapping()
+                self._print_system("[green]✓ Changes saved![/green]")
+                break
+            elif action == "reassign":
+                self.console.print()
+                await self._reassign_roles()
+            elif action == "create":
+                self.console.print()
+                await self._create_role()
+
+    async def _reassign_roles(self):
+        """Reassign a model to an existing role."""
+        from synapse.cli.helpers import safe_ask
+
+        config = self.session.config
+        models = list(config.models.keys())
+        roles = list(config.roles.keys())
+
+        if len(models) < 2:
+            self._print_system(
+                "[yellow]You only have one model.[/yellow] "
+                "Add more with [bold]/setup[/bold] first."
+            )
+            return
+
+        if not roles:
+            self._print_system("[dim]No roles to reassign.[/dim]")
+            return
+
+        # Tips for heterogeneous setup
+        tips = Table(title=None, box=SIMPLE, show_header=False, padding=(0, 2))
+        tips.add_column(style=Colors.ACCENT_STYLE)
+        tips.add_column(style=Colors.DIM)
+        tips.add_row("orchestrator", "→ best reasoning model (plans tasks)")
+        tips.add_row("coder", "→ fast/cheap model (generates code)")
+        tips.add_row("reviewer", "→ highest quality model (reviews code)")
+        self.console.print(tips)
+        self.console.print()
+
+        role_name = safe_ask("Which role?", choices=roles, default=roles[0])
+        rc = config.roles[role_name]
+        self.console.print(f"  Current model: [green]{rc.model}[/green]")
+
+        choice = safe_ask(
+            f"  New model for [cyan]{role_name}[/cyan]",
+            choices=models,
+            default=rc.model,
+        )
+        if choice and choice != rc.model:
+            rc.model = choice
+            self.console.print(f"  [green]✓[/green] {role_name} → {choice}")
+        else:
+            self.console.print(f"  [dim]Kept {rc.model}[/dim]")
+        self.console.print()
+
+    async def _create_role(self):
+        """Create a new custom role with name, description, model, and system prompt."""
+        from synapse.cli.helpers import safe_ask
+        from synapse.config.schema import RoleConfig
+        from synapse.config.loader import save_config
+
+        config = self.session.config
+        models = list(config.models.keys())
+
+        if not models:
+            self._print_system("[yellow]No models configured. Run /setup first.[/yellow]")
+            return
+
+        self._print_system("[bold]Create a new custom role[/bold]\n")
+
+        # Step 1: Role name
+        name = safe_ask("Role name (lowercase, no spaces)", default="")
+        if not name:
+            self._print_system("[dim]Cancelled.[/dim]")
+            return
+        name = name.strip().lower().replace(" ", "_")
+        if name in config.roles:
+            self._print_system(
+                f"[yellow]Role '[bold]{name}[/bold]' already exists.[/yellow] "
+                f"Use [bold]/roles reassign[/bold] to change its model."
+            )
+            return
+
+        # Step 2: Description
+        description = safe_ask("  Short description", default="Custom role")
+
+        # Step 3: Model
+        model = safe_ask("  Default model", choices=models, default=models[0])
+
+        # Step 4: System prompt
+        self.console.print()
+        self.console.print("[dim]Choose a system prompt template:[/dim]")
+        self.console.print("  [cyan]custom[/cyan]     — Write your own")
+        self.console.print("  [cyan]analyst[/cyan]    — Data/situation analysis")
+        self.console.print("  [cyan]writer[/cyan]     — Content creation & editing")
+        self.console.print("  [cyan]architect[/cyan]  — System design & architecture")
+        self.console.print("  [cyan]qa[/cyan]         — Testing & quality assurance")
+        self.console.print("  [cyan]translator[/cyan] — Multi-language translation")
+        self.console.print()
+
+        PROMPT_TEMPLATES = {
+            "analyst": "You are a data analyst. Analyze information thoroughly with quantitative reasoning where possible. Structure your output with clear findings, supporting evidence, and actionable recommendations.",
+            "writer": "You are a professional writer and editor. Produce clear, engaging, well-structured content. Focus on readability, narrative flow, and impact. Adapt tone to the target audience.",
+            "architect": "You are a systems architect. Design scalable, maintainable solutions. Consider trade-offs, constraints, and long-term implications. Output structured architecture decisions with rationale.",
+            "qa": "You are a QA engineer. Design test strategies, identify edge cases, and verify correctness. Think adversarially — find what could break. Output structured test plans with priority levels.",
+            "translator": "You are a professional translator. Translate content accurately while preserving tone, nuance, and cultural context. When appropriate, note alternative interpretations.",
+        }
+
+        template = safe_ask(
+            "  Template",
+            choices=["custom", "analyst", "writer", "architect", "qa", "translator"],
+            default="custom",
+        )
+
+        if template == "custom":
+            self.console.print()
+            self.console.print(
+                "[dim]Write the system prompt (one line). "
+                "This defines the role's behavior and expertise.[/dim]"
+            )
+            system_prompt = safe_ask("  System prompt", default="You are a helpful AI assistant.")
+        else:
+            system_prompt = PROMPT_TEMPLATES[template]
+            self.console.print(f"\n  [dim]System prompt:[/dim] [italic]{system_prompt}[/italic]")
+
+        # Save
+        config.roles[name] = RoleConfig(
+            description=description,
+            model=model,
+            system_prompt=system_prompt,
+        )
+        save_config(config)
+        self.session.config = config
+
+        self.console.print()
+        self.console.print(
+            f"[green]✓[/green] Created role [bold cyan]{name}[/bold cyan] → [green]{model}[/green]"
+        )
+        self.console.print(f"  Description: [dim]{description}[/dim]")
+        self.console.print(f"  Switch to it: [bold]/role {name}[/bold]")
         self.console.print()
 
     # ── Main loop ────────────────────────────────────────────────────
