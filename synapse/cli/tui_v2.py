@@ -29,9 +29,9 @@ from prompt_toolkit import Application
 from prompt_toolkit.application.current import get_app
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import Completer, Completion
-from prompt_toolkit.data_structures import Point
+from prompt_toolkit.document import Document
 from prompt_toolkit.filters import has_focus
-from prompt_toolkit.formatted_text import ANSI, HTML, FormattedText
+from prompt_toolkit.formatted_text import HTML, FormattedText
 from prompt_toolkit.history import FileHistory as PTFileHistory
 from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from prompt_toolkit.key_binding.bindings.mouse import load_mouse_bindings
@@ -175,6 +175,34 @@ class SlashCompleter(Completer):
                     start_position=-len(rest),
                     display_meta=desc,
                 )
+
+
+# ── ChatLexer ─────────────────────────────────────────────────────────
+
+class ChatLexer:
+    """Lexer that styles chat lines based on role prefixes.
+
+    Lines starting with "▸ " → class:user (blue bold)
+    Lines starting with "◉ " → class:ai   (green bold)
+    Lines starting with "⚠ " → class:system (dim italic)
+    Other lines            → no class (plain)
+    """
+
+    def lex_document(self, document):
+        def get_line(lineno):
+            try:
+                line = document.lines[lineno]
+            except IndexError:
+                return []
+            if line.startswith("▸ "):
+                return [("class:user", line)]
+            elif line.startswith("◉ "):
+                return [("class:ai", line)]
+            elif line.startswith("⚠ "):
+                return [("class:system", line)]
+            else:
+                return [("", line)]
+        return get_line
 
 
 # ── ANSI rendering helpers ───────────────────────────────────────────
@@ -333,9 +361,6 @@ class FullScreenTUI:
         self._streaming_text = ""
         self._streaming_reasoning = ""
         self._is_streaming = False
-
-        # Line count for scroll-to-bottom calculation
-        self._content_line_count = 0
 
         # Input — manual Buffer + BufferControl for proper completion menu
         # (TextArea creates its own nested FloatContainer which conflicts
@@ -538,61 +563,25 @@ class FullScreenTUI:
         )
 
         # ── Chat area ──
-        def _get_chat_text():
-            """Build the full chat display text from stored lines + streaming."""
-            tw = _get_terminal_width()
-
-            parts: list = []
-            for role, raw in self._chat_lines:
-                if role == "user":
-                    ansi = _render_user_message(raw, width=tw)
-                    parts.extend(ANSI(ansi).__pt_formatted_text__())
-                elif role == "assistant":
-                    ansi = _render_panel(raw, title=f"◉ {self.session.model_name}",
-                                         border_style="#7ee787", width=tw)
-                    parts.extend(ANSI(ansi).__pt_formatted_text__())
-                elif role == "system":
-                    ansi = _render_system_message(raw, width=tw)
-                    parts.extend(ANSI(ansi).__pt_formatted_text__())
-                else:
-                    parts.append(("", raw))
-                parts.append(("", "\n"))
-
-            if self._is_streaming and (self._streaming_text or self._streaming_reasoning):
-                parts.append(("class:ai", f"◉ {self.session.model_name}\n"))
-                if self._streaming_reasoning:
-                    parts.append(("class:system", "🤔 Thinking...\n"))
-                    reasoning_ansi = _render_markdown(self._streaming_reasoning, width=tw)
-                    parts.extend(ANSI(reasoning_ansi).__pt_formatted_text__())
-                    if self._streaming_text:
-                        parts.append(("", "\n"))
-                        parts.append(("class:separator", "─" * 40 + "\n"))
-                if self._streaming_text:
-                    content_ansi = _render_markdown(self._streaming_text, width=tw)
-                    parts.extend(ANSI(content_ansi).__pt_formatted_text__())
-
-            if not parts:
-                parts.append(("class:system",
-                              "Welcome to Synapse! Type a message to start.\n"
-                              "  /help — show commands  |  /setup — add models  |  /quit — exit"))
-
-            # Track line count for scroll-to-bottom
-            self._content_line_count = sum(
-                1 for (_s, t) in parts for _c in t if _c == "\n"
-            ) + 1
-
-            return FormattedText(parts)
-
-        self._chat_control = FormattedTextControl(
-            text=_get_chat_text,
-            style="class:chat",
-            focusable=True,
-            get_cursor_position=lambda: Point(0, self._get_cursor_y()),
+        # Read-only Buffer + BufferControl for native mouse selection,
+        # visual highlighting, and Cmd+C copy.  A ChatLexer styles lines
+        # by role prefix (▸ user / ◉ AI / ⚠ system).
+        self._chat_buffer = Buffer(
+            read_only=True,
+            multiline=True,
+            document=Document(
+                text="▸ Welcome to Synapse! Type a message to start.\n"
+                     "⚠ /help — show commands  |  /setup — add models  |  /quit — exit\n",
+            ),
+        )
+        self._chat_buffer_control = BufferControl(
+            buffer=self._chat_buffer,
+            lexer=ChatLexer(),
+            focus_on_click=True,
         )
         self._chat_window = _ClampedScrollWindow(
-            content=self._chat_control,
+            content=self._chat_buffer_control,
             wrap_lines=False,
-            always_hide_cursor=True,
             style="class:chat",
             allow_scroll_beyond_bottom=True,
             right_margins=[ScrollbarMargin(display_arrows=True)],
@@ -654,32 +643,29 @@ class FullScreenTUI:
     def _add_user_message(self, text: str):
         """Append a user message to the chat."""
         self._chat_lines.append(("user", text))
+        self._chat_buffer.insert_text(f"▸ {text}\n\n")
         self._scroll_to_bottom()
 
     def _add_assistant_message(self, text: str):
         """Append a complete assistant message to the chat."""
         self._chat_lines.append(("assistant", text))
+        self._chat_buffer.insert_text(f"◉ {self.session.model_name}\n{text}\n\n")
         self._scroll_to_bottom()
 
     def _add_system_message(self, text: str):
         """Append a system message to the chat."""
         self._chat_lines.append(("system", text))
+        self._chat_buffer.insert_text(f"⚠ {text}\n")
         self._scroll_to_bottom()
 
     def _add_error(self, text: str):
         """Append an error message to the chat."""
         self._chat_lines.append(("system", text))
+        self._chat_buffer.insert_text(f"⚠ ✗ {text}\n")
         self._scroll_to_bottom()
 
-    def _get_cursor_y(self) -> int:
-        """Safe cursor Y for the scroll algorithm.  Clamped to content bounds."""
-        vs = getattr(self, '_chat_window', None)
-        scroll = vs.vertical_scroll if vs is not None else 0
-        max_y = max(0, self._content_line_count - 1)
-        return max(0, min(scroll, max_y))
-
     def _scroll_step(self) -> int:
-        """Lines to scroll per tick — 1 for fine-grained, 3 if holding key."""
+        """Lines to scroll per tick."""
         return 1
 
     def _max_scroll(self) -> int:
@@ -689,7 +675,8 @@ class FullScreenTUI:
             chat_h = max(1, rows - 4)
         except Exception:
             chat_h = 20
-        return max(0, self._content_line_count - chat_h)
+        line_count = self._chat_buffer.document.line_count
+        return max(0, line_count - chat_h)
 
     def _scroll_to_bottom(self):
         """Ensure the chat window shows the latest messages."""
@@ -702,39 +689,10 @@ class FullScreenTUI:
             visible_only: If True, only copy currently visible lines.
                           If False (default), copy entire chat history.
         """
-        import re
         import subprocess
 
-        lines = []
-        if visible_only:
-            # Estimate visible range from scroll + window height
-            vs = self._chat_window.vertical_scroll
-            try:
-                rows = get_app().renderer.output.get_size().rows
-                chat_h = max(1, rows - 4)
-            except Exception:
-                chat_h = 20
-            line_range = range(vs, vs + chat_h)
-            full_lines = [
-                f"[{role}] {raw}"
-                for role, raw in self._chat_lines
-            ]
-            # Crude visible-only: take all lines, user can refine later
-            lines = full_lines
-        else:
-            for role, raw in self._chat_lines:
-                label = {"user": "You", "assistant": self.session.model_name,
-                         "system": "System"}.get(role, role)
-                lines.append(f"## {label}\n{raw}\n")
-
-        if self._is_streaming and self._streaming_text:
-            lines.append(f"## {self.session.model_name} (streaming)\n{self._streaming_text}")
-
-        text = "\n".join(lines)
-
-        # Strip ANSI escape sequences for clean plain text
-        ansi_escape = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
-        text = ansi_escape.sub('', text)
+        # Use buffer text directly — it's already plain text
+        text = self._chat_buffer.text
 
         if not text.strip():
             return
@@ -755,6 +713,7 @@ class FullScreenTUI:
     def _clear_chat(self):
         """Clear all visible messages (keep system prompt)."""
         self._chat_lines.clear()
+        self._chat_buffer.reset(Document(text=""))
         self.session.messages = [
             m for m in self.session.messages if m.get("role") == "system"
         ]
@@ -762,7 +721,7 @@ class FullScreenTUI:
     # ── Streaming ─────────────────────────────────────────────────────
 
     async def _stream_response(self, user_input: str):
-        """Stream AI response into the chat window in real-time.
+        """Stream AI response into the chat buffer in real-time.
 
         Handles reasoning/thinking tokens (DeepSeek R1, Claude thinking, etc.)
         by displaying them in a dimmed collapsible section before the response.
@@ -771,6 +730,10 @@ class FullScreenTUI:
         self._streaming_text = ""
         self._streaming_reasoning = ""
         self._cancel_streaming = False
+
+        # Insert AI header and save base for streaming rebuilds
+        self._chat_buffer.insert_text(f"◉ {self.session.model_name}\n")
+        _stream_base = self._chat_buffer.text
 
         app = get_app()
 
@@ -784,10 +747,9 @@ class FullScreenTUI:
             last_refresh = 0.0
             async for chunk in stream:
                 if self._cancel_streaming:
-                    self._add_system_message("[Streaming cancelled]")
+                    self._chat_buffer.text = _stream_base + "\n⚠ [Streaming cancelled]\n"
                     break
 
-                # Separate reasoning from content
                 if chunk.reasoning:
                     self._streaming_reasoning += chunk.reasoning
                 if chunk.content:
@@ -797,6 +759,14 @@ class FullScreenTUI:
                 import time
                 now = time.monotonic()
                 if now - last_refresh > 0.066:
+                    # Rebuild buffer text with current streaming content
+                    body = ""
+                    if self._streaming_reasoning:
+                        body += "🤔 Thinking...\n" + self._streaming_reasoning
+                        if self._streaming_text:
+                            body += "\n" + "─" * 40 + "\n"
+                    body += self._streaming_text
+                    self._chat_buffer.text = _stream_base + body
                     app.invalidate()
                     last_refresh = now
 
@@ -810,7 +780,6 @@ class FullScreenTUI:
             self._streaming_text = ""
 
             if full_text:
-                # If there was reasoning, prepend it as a dimmed block
                 if reasoning:
                     full_text = (
                         f"<details><summary>🤔 Thinking</summary>\n\n"
@@ -819,7 +788,8 @@ class FullScreenTUI:
                 self.session.messages.append(
                     {"role": "assistant", "content": full_text}
                 )
-                self._add_assistant_message(full_text)
+                # Replace streaming content with final formatted text
+                self._chat_buffer.text = _stream_base + full_text + "\n\n"
 
             app.invalidate()
 
