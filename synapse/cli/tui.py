@@ -286,7 +286,7 @@ class ChatTUI:
             ("/mode <name>", "Change mode (single/debate/pipeline)"),
             ("/remember <text>", "Save facts to memory"),
             ("/recall <query>", "Search memories"),
-            ("Ctrl+C", "Interrupt / exit"),
+            ("/quit, /exit", "Exit chat"),
         ]
 
         for key, desc in shortcuts:
@@ -383,8 +383,8 @@ class ChatTUI:
         hints.append("  ", style=Colors.DIM)
         hints.append("/clear", style=Style(color=Colors.MUTED))
         hints.append("  ", style=Colors.DIM)
-        hints.append("Ctrl+C", style=Style(color=Colors.MUTED))
-        hints.append(" to quit", style=Colors.DIM)
+        hints.append("/quit", style=Style(color=Colors.MUTED))
+        hints.append(" to exit", style=Colors.DIM)
 
         self.console.print(hints)
 
@@ -674,7 +674,7 @@ class ChatTUI:
         help_table.add_row("", "")
 
         help_table.add_row("[bold]Other[/bold]", "")
-        help_table.add_row("/quit, Ctrl+C", "Exit chat")
+        help_table.add_row("/quit, /exit, /q", "Exit chat")
 
         self.console.print(
             Panel(help_table, title="[bold]Commands[/bold]", border_style=Style(color=Colors.BORDER), box=ROUNDED)
