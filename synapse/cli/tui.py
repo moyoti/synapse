@@ -564,7 +564,7 @@ class ChatTUI:
                 from synapse.cli.onboarding import chat_setup
                 await chat_setup(self.session.config)
                 self.session.config = load_synapse_config()
-            except KeyboardInterrupt:
+            except (KeyboardInterrupt, asyncio.CancelledError):
                 self.console.print()
                 self._print_system("[dim]Setup cancelled.[/dim]")
             return None
@@ -729,7 +729,7 @@ class ChatTUI:
                     self.session.model_name,
                     self.session.mode,
                 )
-            except KeyboardInterrupt:
+            except (KeyboardInterrupt, asyncio.CancelledError):
                 self.console.print()
                 self._print_system("[dim]Skipping setup. You can run /setup anytime later.[/dim]")
                 self.console.print()
@@ -750,30 +750,31 @@ class ChatTUI:
             if not user_input:
                 continue
 
-            # Slash command
-            if user_input.startswith("/"):
-                result = await self._handle_command(user_input)
-                if result == "quit":
-                    break
-                elif result == "clear":
-                    self.console.clear()
-                    self._print_header_and_history()
-                continue
-
-            # Smart suggestion: detect when user asks about adding models
-            if self._detect_add_model_intent(user_input):
-                self._print_system(
-                    "💡 [bold]You can add a new model right here![/bold]\n"
-                    "Just type [bold green]/setup[/bold green] and I'll guide you through it — "
-                    "pick a provider, enter your API key, and you're ready to go.\n"
-                    "[dim]Type /setup now, or just ask me a question.[/dim]"
-                )
-                continue
-
-            # Normal chat
-            self._print_user_input(user_input)
-
+            # Wrap all processing so Ctrl+C never exits the chat
             try:
+                # Slash command
+                if user_input.startswith("/"):
+                    result = await self._handle_command(user_input)
+                    if result == "quit":
+                        break
+                    elif result == "clear":
+                        self.console.clear()
+                        self._print_header_and_history()
+                    continue
+
+                # Smart suggestion: detect when user asks about adding models
+                if self._detect_add_model_intent(user_input):
+                    self._print_system(
+                        "💡 [bold]You can add a new model right here![/bold]\n"
+                        "Just type [bold green]/setup[/bold green] and I'll guide you through it — "
+                        "pick a provider, enter your API key, and you're ready to go.\n"
+                        "[dim]Type /setup now, or just ask me a question.[/dim]"
+                    )
+                    continue
+
+                # Normal chat
+                self._print_user_input(user_input)
+
                 effective_mode = self.session.mode
                 if effective_mode == "auto":
                     effective_mode = detect_mode(user_input).value
@@ -798,6 +799,9 @@ class ChatTUI:
                     self._rendered_messages.append(panel)
                     self.console.print()
 
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                self.console.print()
+                self._print_system("[dim]Cancelled.[/dim]")
             except Exception as e:
                 self.console.print(self._render_error(str(e)))
                 self.console.print()
