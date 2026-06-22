@@ -29,18 +29,17 @@ from prompt_toolkit import Application
 from prompt_toolkit.application.current import get_app
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import Completer, Completion
-from prompt_toolkit.document import Document
+from prompt_toolkit.filters import has_focus
 from prompt_toolkit.formatted_text import ANSI, HTML, FormattedText
 from prompt_toolkit.history import FileHistory as PTFileHistory
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
-from prompt_toolkit.layout import HSplit, Layout, VSplit, Window, WindowAlign
+from prompt_toolkit.layout import HSplit, Layout, Window
 from prompt_toolkit.layout.controls import (
     BufferControl,
     FormattedTextControl,
 )
 from prompt_toolkit.layout.processors import BeforeInput
-from prompt_toolkit.styles import Style as PTStyle, merge_styles
+from prompt_toolkit.styles import Style as PTStyle
 
 from rich.console import Console as RichConsole
 from rich.markdown import Markdown
@@ -298,12 +297,12 @@ class FullScreenTUI:
             """Escape focuses the chat window for scrolling."""
             event.app.layout.focus(self._chat_window)
 
-        @self._kb.add("i", filter=~get_app().layout.has_focus(self._input_buffer))
+        @self._kb.add("i", filter=~has_focus(self._input_buffer))
         def _(event):
             """Press 'i' to focus input from chat view."""
             event.app.layout.focus(self._input_window)
 
-        @self._kb.add("/", filter=~get_app().layout.has_focus(self._input_buffer))
+        @self._kb.add("/", filter=~has_focus(self._input_buffer))
         def _(event):
             """Press '/' to focus input and start typing a command."""
             self._input_buffer.text = "/"
