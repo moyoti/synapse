@@ -146,11 +146,12 @@ def chat(
     mode: str = typer.Option("auto", help="Collaboration mode: auto, single, orchestrate, debate, pipeline"),
     role: Optional[str] = typer.Option(None, help="Role to use (default: 'default')"),
     model: Optional[str] = typer.Option(None, help="Override model name"),
+    classic: bool = typer.Option(False, "--classic", help="Use legacy rich-based TUI"),
 ):
     """Start an interactive chat session."""
     import asyncio
     from synapse.cli.chat import run_chat
-    asyncio.run(run_chat(mode=mode, role=role, model=model))
+    asyncio.run(run_chat(mode=mode, role=role, model=model, classic=classic))
 
 
 @app.command()
