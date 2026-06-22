@@ -54,6 +54,7 @@ async def run_onboarding(config: SynapseConfig | None = None) -> SynapseConfig:
         return config
 
     console.print("[bold]Let's connect your first AI model.[/bold]")
+    console.print("[dim]Press Ctrl+C at any prompt to skip[/dim]")
     console.print()
 
     # Show provider options
@@ -190,9 +191,10 @@ def _show_provider_menu():
 # ── In-chat /setup command ──
 
 async def chat_setup(config: SynapseConfig):
-    """Add a model from within a chat session."""
+    """Add a model from within a chat session. Press Ctrl+C at any step to cancel."""
     console.print()
     console.print("[bold]Add another model[/bold]")
+    console.print("[dim]Press Ctrl+C at any prompt to cancel[/dim]")
     console.print()
 
     _show_provider_menu()
@@ -202,6 +204,10 @@ async def chat_setup(config: SynapseConfig):
         choices=list(PROVIDER_PRESETS.keys()),
         default="deepseek",
     )
+    if not choice:
+        console.print("[dim]Setup cancelled.[/dim]")
+        console.print()
+        return
 
     # Simplified inline setup
     preset = PROVIDER_PRESETS[choice]

@@ -560,9 +560,13 @@ class ChatTUI:
 
         # ── Setup / Config ──
         if verb == "/setup":
-            from synapse.cli.onboarding import chat_setup
-            await chat_setup(self.session.config)
-            self.session.config = load_synapse_config()
+            try:
+                from synapse.cli.onboarding import chat_setup
+                await chat_setup(self.session.config)
+                self.session.config = load_synapse_config()
+            except KeyboardInterrupt:
+                self.console.print()
+                self._print_system("[dim]Setup cancelled.[/dim]")
             return None
 
         if verb == "/check":
@@ -715,14 +719,20 @@ class ChatTUI:
         missing = find_required_keys(self.session.config)
         if missing and len(self.session.config.models) <= 1:
             self._print_system("[yellow]No API keys found. Let's set up your first model.[/yellow]")
-            from synapse.cli.onboarding import run_onboarding
-            self.session.config = await run_onboarding(self.session.config)
-            self.session = ChatSession(
-                load_synapse_config(),
-                self.session.role_name,
-                self.session.model_name,
-                self.session.mode,
-            )
+            self._print_system("[dim]Press Ctrl+C to skip setup[/dim]")
+            try:
+                from synapse.cli.onboarding import run_onboarding
+                self.session.config = await run_onboarding(self.session.config)
+                self.session = ChatSession(
+                    load_synapse_config(),
+                    self.session.role_name,
+                    self.session.model_name,
+                    self.session.mode,
+                )
+            except KeyboardInterrupt:
+                self.console.print()
+                self._print_system("[dim]Skipping setup. You can run /setup anytime later.[/dim]")
+                self.console.print()
 
         # Initial display
         self.console.clear()
