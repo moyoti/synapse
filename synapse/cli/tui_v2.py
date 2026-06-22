@@ -115,6 +115,7 @@ _COMMANDS_WITH_META = [
     ("/stats", "Memory statistics"),
     ("/session save", "Save this conversation"),
     ("/session list", "List saved sessions"),
+    ("/session load", "Resume a saved session"),
 ]
 
 _COMMAND_DESCRIPTIONS = dict(_COMMANDS_WITH_META)
@@ -930,10 +931,75 @@ class FullScreenTUI:
                         self._add_system_message("No saved sessions.")
                 except Exception as e:
                     self._add_error(str(e))
+            elif sub == "load":
+                session_prefix = sub_arg.strip() if sub_arg else ""
+                if not session_prefix:
+                    self._add_error(
+                        "Usage: /session load <session_id_prefix>\n"
+                        "Use /session list to see available sessions."
+                    )
+                else:
+                    try:
+                        from synapse.memory import MemoryStore
+                        store_dir = Path.home() / ".synapse"
+                        store = MemoryStore(store_dir / "synapse.db")
+
+                        # Find session by prefix match
+                        all_sessions = store.list_sessions(limit=100)
+                        matched = [
+                            s for s in all_sessions
+                            if s.id.startswith(session_prefix)
+                        ]
+                        if not matched:
+                            self._add_error(
+                                f"No session found with prefix '{session_prefix}'.\n"
+                                "Use /session list to see available sessions."
+                            )
+                        elif len(matched) > 1:
+                            lines = ["## Multiple matches — be more specific:"]
+                            for s in matched:
+                                lines.append(
+                                    f"• `{s.id[:8]}` {s.title or '(untitled)'} "
+                                    f"— {s.created_at[:16]}"
+                                )
+                            self._add_system_message("\n".join(lines))
+                        else:
+                            session = matched[0]
+
+                            # Build context from session summary
+                            context_parts = [
+                                f"[已恢复会话: {session.title or 'Untitled'}]",
+                                f"创建时间: {session.created_at[:16]}",
+                                f"消息数: {session.message_count}",
+                            ]
+                            if session.summary:
+                                context_parts.append(
+                                    f"\n--- 上次对话摘要 ---\n{session.summary}"
+                                )
+
+                            context = "\n".join(context_parts)
+
+                            # Replace session messages with context
+                            system_msgs = [
+                                m for m in self.session.messages
+                                if m.get("role") == "system"
+                            ]
+                            self.session.messages = system_msgs + [
+                                {"role": "system", "content": context}
+                            ]
+                            self._clear_chat()
+                            self._add_system_message(
+                                f"✓ Session loaded: **{session.title or session.id[:8]}**\n"
+                                f"  {session.message_count} messages compressed → summary context\n"
+                                f"  Type anything to continue the conversation."
+                            )
+                    except Exception as e:
+                        self._add_error(f"Session load error: {e}")
             else:
                 self._add_system_message(
                     "**/session save** [title] — Save conversation\n"
-                    "**/session list** — List saved sessions"
+                    "**/session list** — List saved sessions\n"
+                    "**/session load** <id_prefix> — Resume a saved session"
                 )
             return True
 
