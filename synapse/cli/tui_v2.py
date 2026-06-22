@@ -405,10 +405,14 @@ class FullScreenTUI:
         # ── Chat area ──
         def _get_chat_text():
             """Build the full chat display text from stored lines + streaming."""
-            parts = []
+            # IMPORTANT: FormattedText must only contain (style, text) tuples,
+            # NOT ANSI/HTML objects. prompt_toolkit's to_formatted_text() will
+            # unpack items when applying style, and ANSI objects can't be unpacked.
+            parts: list = []
             for role, raw, ansi in self._chat_lines:
                 if ansi:
-                    parts.append(ANSI(ansi))
+                    # ANSI.__pt_formatted_text__() → list of (style, text) tuples
+                    parts.extend(ANSI(ansi).__pt_formatted_text__())
                 else:
                     parts.append(("", raw))
                 parts.append(("", "\n"))
@@ -416,8 +420,8 @@ class FullScreenTUI:
             if self._is_streaming and self._streaming_text:
                 # Live-streaming: render current accumulated text
                 stream_ansi = _render_markdown(self._streaming_text)
-                parts.append(ANSI(f"◉ {self.session.model_name}\n"))
-                parts.append(ANSI(stream_ansi))
+                parts.append(("class:ai", f"◉ {self.session.model_name}\n"))
+                parts.extend(ANSI(stream_ansi).__pt_formatted_text__())
 
             if not parts:
                 # Show welcome message
