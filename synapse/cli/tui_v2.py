@@ -27,19 +27,15 @@ from typing import Optional
 
 from prompt_toolkit import Application
 from prompt_toolkit.application.current import get_app
-from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.filters import has_focus
 from prompt_toolkit.formatted_text import ANSI, HTML, FormattedText
 from prompt_toolkit.history import FileHistory as PTFileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import FloatContainer, HSplit, Layout, Window
-from prompt_toolkit.layout.controls import (
-    BufferControl,
-    FormattedTextControl,
-)
-from prompt_toolkit.layout.processors import BeforeInput
+from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.styles import Style as PTStyle
+from prompt_toolkit.widgets import TextArea
 
 from rich.console import Console as RichConsole
 from rich.markdown import Markdown
@@ -78,6 +74,8 @@ _STYLE = PTStyle.from_dict({
     "input": "bg:#161b22",
     "input.prompt": "#58a6ff bold",
     "input.text": "#e6edf3",
+    "input.text-area": "bg:#161b22 #e6edf3",
+    "input.text-area.prompt": "#58a6ff bold",
     "hints": "#484f58",
     # Dropdown
     "completion-menu": "bg:#161b22 #e6edf3",
@@ -291,13 +289,16 @@ class FullScreenTUI:
         self._streaming_text = ""
         self._is_streaming = False
 
-        # Input buffer
-        self._input_buffer = Buffer(
-            multiline=False,
-            history=PTFileHistory(str(_HISTORY_FILE)),
+        # Input — use TextArea for proper completion menu support
+        self._input_area = TextArea(
+            height=1,
+            prompt="› ",
             completer=SlashCompleter(),
+            history=PTFileHistory(str(_HISTORY_FILE)),
             complete_while_typing=True,
+            style="class:input",
         )
+        self._input_buffer = self._input_area.buffer
 
         # Key bindings
         self._kb = KeyBindings()
@@ -438,18 +439,8 @@ class FullScreenTUI:
             style="class:hints",
         )
 
-        # ── Input ──
-        def _get_prompt():
-            return HTML("<input.prompt>› </input.prompt>")
-
-        self._input_window = Window(
-            content=BufferControl(
-                buffer=self._input_buffer,
-                input_processors=[BeforeInput(_get_prompt)],
-            ),
-            height=1,
-            style="class:input",
-        )
+        # ── Input (TextArea handles Buffer + BufferControl + completion menu) ──
+        self._input_window = self._input_area
 
         # ── Full layout (wrapped in FloatContainer for completion menu) ──
         root_container = FloatContainer(
