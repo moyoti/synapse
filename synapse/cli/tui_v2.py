@@ -122,17 +122,51 @@ _COMMAND_DESCRIPTIONS = dict(_COMMANDS_WITH_META)
 
 
 class SlashCompleter(Completer):
-    """Fuzzy-matching slash command completer with descriptions."""
+    """Hierarchical slash command completer with descriptions.
+
+    - Typing / → shows all top-level commands
+    - Typing /roles → shows /roles, /roles add, /roles reassign
+    - Typing /roles → shows add, reassign (just the sub-parts)
+    - Typing /session → shows save, list
+    """
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         if not text.startswith("/"):
             return
+
+        # Split into parts: e.g., "/roles add" → ["/roles", "add"]
+        parts = text.split()
+        base = parts[0] if parts else text
+
+        # Detect if user typed a trailing space (wants sub-options)
+        wants_sub = text.endswith(" ") and len(parts) >= 1
+
+        if not wants_sub and len(parts) == 1:
+            # User is still typing the base command — show matching commands
+            for cmd, desc in _COMMANDS_WITH_META:
+                if cmd.startswith(text):
+                    yield Completion(
+                        cmd,
+                        start_position=-len(text),
+                        display_meta=desc,
+                    )
+            return
+
+        # User has typed a space after the base command — show sub-options
+        rest = text[len(base):].lstrip()
+
         for cmd, desc in _COMMANDS_WITH_META:
-            if cmd.startswith(text):
+            if not cmd.startswith(base + " "):
+                continue
+            if cmd == base:
+                continue
+            # Extract the sub-command part: "/roles add" → "add"
+            sub = cmd[len(base) + 1:]
+            if sub.startswith(rest):
                 yield Completion(
-                    cmd,
-                    start_position=-len(text),
+                    sub,
+                    start_position=-len(rest),
                     display_meta=desc,
                 )
 
