@@ -33,8 +33,9 @@ from prompt_toolkit.filters import has_focus
 from prompt_toolkit.formatted_text import ANSI, HTML, FormattedText
 from prompt_toolkit.history import FileHistory as PTFileHistory
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import FloatContainer, HSplit, Layout, VSplit, Window
+from prompt_toolkit.layout import Float, FloatContainer, HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.styles import Style as PTStyle
 
 from rich.console import Console as RichConsole
@@ -472,7 +473,19 @@ class FullScreenTUI:
                 hints_window,
                 self._input_line,
             ]),
-            floats=[],
+            floats=[
+                # Completion dropdown — positioned at cursor, shown only when
+                # the focused buffer has completions (auto-filtered by CompletionsMenu)
+                Float(
+                    xcursor=True,
+                    ycursor=True,
+                    transparent=True,
+                    content=CompletionsMenu(
+                        max_height=12,
+                        scroll_offset=1,
+                    ),
+                ),
+            ],
         )
 
         self._layout = Layout(root_container, focused_element=self._input_line)
