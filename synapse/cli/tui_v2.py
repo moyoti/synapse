@@ -27,15 +27,15 @@ from typing import Optional
 
 from prompt_toolkit import Application
 from prompt_toolkit.application.current import get_app
+from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.filters import has_focus
 from prompt_toolkit.formatted_text import ANSI, HTML, FormattedText
 from prompt_toolkit.history import FileHistory as PTFileHistory
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import FloatContainer, HSplit, Layout, Window
-from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout import FloatContainer, HSplit, Layout, VSplit, Window
+from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.styles import Style as PTStyle
-from prompt_toolkit.widgets import TextArea
 
 from rich.console import Console as RichConsole
 from rich.markdown import Markdown
@@ -289,16 +289,38 @@ class FullScreenTUI:
         self._streaming_text = ""
         self._is_streaming = False
 
-        # Input — use TextArea for proper completion menu support
-        self._input_area = TextArea(
-            height=1,
-            prompt="› ",
+        # Input — manual Buffer + BufferControl for proper completion menu
+        # (TextArea creates its own nested FloatContainer which conflicts
+        #  with our outer FloatContainer, preventing the completion float
+        #  from rendering)
+        self._input_buffer = Buffer(
             completer=SlashCompleter(),
-            history=PTFileHistory(str(_HISTORY_FILE)),
             complete_while_typing=True,
-            style="class:input",
+            history=PTFileHistory(str(_HISTORY_FILE)),
         )
-        self._input_buffer = self._input_area.buffer
+        self._input_control = BufferControl(
+            buffer=self._input_buffer,
+            input_processors=[],
+        )
+        self._input_window = Window(
+            content=self._input_control,
+            height=1,
+            style="class:input.text-area",
+        )
+        # Prompt window
+        self._prompt_window = Window(
+            content=FormattedTextControl(
+                text=[("class:input.text-area.prompt", "› ")],
+            ),
+            width=2,
+            height=1,
+            style="class:input.text-area",
+        )
+        # Combined input line: prompt + input
+        self._input_line = VSplit([
+            self._prompt_window,
+            self._input_window,
+        ])
 
         # Key bindings
         self._kb = KeyBindings()
@@ -335,14 +357,14 @@ class FullScreenTUI:
         @self._kb.add("i", filter=~has_focus(self._input_buffer))
         def _(event):
             """Press 'i' to focus input from chat view."""
-            event.app.layout.focus(self._input_window)
+            event.app.layout.focus(self._input_line)
 
         @self._kb.add("/", filter=~has_focus(self._input_buffer))
         def _(event):
             """Press '/' to focus input and start typing a command."""
             self._input_buffer.text = "/"
             self._input_buffer.cursor_position = 1
-            event.app.layout.focus(self._input_window)
+            event.app.layout.focus(self._input_line)
 
         # Async state
         self._pending_input: str | None = None
@@ -439,8 +461,7 @@ class FullScreenTUI:
             style="class:hints",
         )
 
-        # ── Input (TextArea handles Buffer + BufferControl + completion menu) ──
-        self._input_window = self._input_area
+        # ── Input (manual BufferControl + VSplit for prompt) ──
 
         # ── Full layout (wrapped in FloatContainer for completion menu) ──
         root_container = FloatContainer(
@@ -449,12 +470,12 @@ class FullScreenTUI:
                 self._chat_window,
                 separator,
                 hints_window,
-                self._input_window,
+                self._input_line,
             ]),
             floats=[],
         )
 
-        self._layout = Layout(root_container, focused_element=self._input_window)
+        self._layout = Layout(root_container, focused_element=self._input_line)
 
     # ── Rendering API ─────────────────────────────────────────────────
 
