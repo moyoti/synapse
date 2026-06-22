@@ -10,6 +10,7 @@ from rich.table import Table
 from synapse.config.loader import load_config, create_default_config, save_config, set_key_in_env
 from synapse.config.schema import ModelConfig, RoleConfig
 from synapse.models.registry import PROVIDER_PRESETS
+from synapse.cli.helpers import safe_ask
 
 console = Console()
 
@@ -35,7 +36,7 @@ def cmd_add_model():
     console.print()
 
     # Choose preset or custom
-    choice = Prompt.ask(
+    choice = safe_ask(
         "Choose provider preset (or 'custom')",
         choices=list(PROVIDER_PRESETS.keys()) + ["custom"],
         default="deepseek",
@@ -51,12 +52,12 @@ def _add_preset_model(config, preset_id: str):
     """Add a model from a known preset."""
     preset = PROVIDER_PRESETS[preset_id]
 
-    name = Prompt.ask("Config name (e.g. 'my-deepseek', 'my-claude')", default=preset_id)
+    name = safe_ask("Config name (e.g. 'my-deepseek', 'my-claude')", default=preset_id)
     if name in config.models:
         if not Confirm.ask(f"Model '{name}' already exists. Overwrite?"):
             return
 
-    model_name = Prompt.ask(
+    model_name = safe_ask(
         "Model ID",
         choices=preset["models"],
         default=preset["models"][0],
@@ -75,8 +76,8 @@ def _add_preset_model(config, preset_id: str):
                 set_key_in_env(env_key, key_value)
                 console.print(f"[green]✓[/green] Key saved to ~/.synapse/.env")
 
-    temp = float(Prompt.ask("Temperature", default="0.7"))
-    max_tokens = int(Prompt.ask("Max tokens", default="4096"))
+    temp = float(safe_ask("Temperature", default="0.7"))
+    max_tokens = int(safe_ask("Max tokens", default="4096"))
 
     config.models[name] = ModelConfig(
         provider=preset["provider"],
@@ -97,7 +98,7 @@ def _add_custom_model(config):
         if not Confirm.ask(f"Model '{name}' already exists. Overwrite?"):
             return
 
-    provider = Prompt.ask(
+    provider = safe_ask(
         "Provider type",
         choices=["compat", "deepseek", "anthropic", "gemini"],
         default="compat",
@@ -105,10 +106,10 @@ def _add_custom_model(config):
 
     model_name = Prompt.ask("Model ID (e.g., 'qwen2.5:72b')")
     api_key = Prompt.ask("API key (or ${ENV_VAR} format)", default="")
-    base_url = Prompt.ask("Base URL", default="https://api.openai.com/v1")
+    base_url = safe_ask("Base URL", default="https://api.openai.com/v1")
 
-    temp = float(Prompt.ask("Temperature", default="0.7"))
-    max_tokens = int(Prompt.ask("Max tokens", default="4096"))
+    temp = float(safe_ask("Temperature", default="0.7"))
+    max_tokens = int(safe_ask("Max tokens", default="4096"))
 
     config.models[name] = ModelConfig(
         provider=provider,
@@ -137,7 +138,7 @@ def cmd_add_role():
     console.print("\nAvailable models:")
     for m_name in config.models:
         console.print(f"  • {m_name}")
-    model = Prompt.ask("Model to bind", default="deepseek")
+    model = safe_ask("Model to bind", default="deepseek")
 
     if model not in config.models:
         console.print(f"[red]Model '{model}' not found. Add it first with: synapse config add-model[/red]")

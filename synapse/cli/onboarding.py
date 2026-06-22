@@ -14,8 +14,10 @@ from synapse.config.loader import (
 )
 from synapse.config.schema import SynapseConfig, ModelConfig
 from synapse.models.registry import PROVIDER_PRESETS
+from synapse.cli.helpers import safe_ask
 
 console = Console()
+
 
 WELCOME = r"""
   ╔══════════════════════════════════════════════╗
@@ -58,7 +60,7 @@ async def run_onboarding(config: SynapseConfig | None = None) -> SynapseConfig:
     _show_provider_menu()
 
     # Let user pick
-    choice = Prompt.ask(
+    choice = safe_ask(
         "Which provider would you like to use?",
         choices=list(PROVIDER_PRESETS.keys()),
         default="deepseek",
@@ -100,14 +102,14 @@ async def run_onboarding(config: SynapseConfig | None = None) -> SynapseConfig:
     # Model selection
     console.print()
     console.print("[bold]Select model:[/bold]")
-    model_name = Prompt.ask(
+    model_name = safe_ask(
         "Model",
         choices=preset["models"],
         default=preset["models"][0],
     )
 
     # Config name
-    config_name = Prompt.ask("Name for this model in config", default=choice)
+    config_name = safe_ask("Name for this model in config", default=choice)
 
     # Add to config
     api_key_ref = f"${{{env_key}}}" if env_key else ""
@@ -195,7 +197,7 @@ async def chat_setup(config: SynapseConfig):
 
     _show_provider_menu()
 
-    choice = Prompt.ask(
+    choice = safe_ask(
         "Which provider?",
         choices=list(PROVIDER_PRESETS.keys()),
         default="deepseek",
@@ -215,13 +217,13 @@ async def chat_setup(config: SynapseConfig):
             if key:
                 set_key_in_env(env_key, key)
 
-    model_name = Prompt.ask(
+    model_name = safe_ask(
         "  Model",
         choices=preset["models"],
         default=preset["models"][0],
     )
 
-    config_name = Prompt.ask("  Config name", default=choice)
+    config_name = safe_ask("  Config name", default=choice)
 
     api_key_ref = f"${{{env_key}}}" if env_key else ""
     config.models[config_name] = ModelConfig(
