@@ -33,7 +33,7 @@ from prompt_toolkit.filters import has_focus
 from prompt_toolkit.formatted_text import ANSI, HTML, FormattedText
 from prompt_toolkit.history import FileHistory as PTFileHistory
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import HSplit, Layout, Window
+from prompt_toolkit.layout import FloatContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import (
     BufferControl,
     FormattedTextControl,
@@ -451,14 +451,17 @@ class FullScreenTUI:
             style="class:input",
         )
 
-        # ── Full layout ──
-        root_container = HSplit([
-            header_window,
-            self._chat_window,
-            separator,
-            hints_window,
-            self._input_window,
-        ])
+        # ── Full layout (wrapped in FloatContainer for completion menu) ──
+        root_container = FloatContainer(
+            content=HSplit([
+                header_window,
+                self._chat_window,
+                separator,
+                hints_window,
+                self._input_window,
+            ]),
+            floats=[],
+        )
 
         self._layout = Layout(root_container, focused_element=self._input_window)
 
