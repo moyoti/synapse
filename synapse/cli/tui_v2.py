@@ -346,13 +346,28 @@ class FullScreenTUI:
 
         @self._kb.add("enter")
         def _(event):
-            """Submit input."""
+            """Submit input — processes in background, app stays open."""
+            if self._is_streaming:
+                return  # Don't accept input while AI is responding
+
             text = self._input_buffer.text.strip()
-            if text:
-                # Queue the input for async processing
-                self._pending_input = text
-                self._input_buffer.reset()
-                event.app.exit(result="input")
+            if not text:
+                return
+            self._input_buffer.reset()
+            self._pending_input = text
+
+            # Quit commands exit immediately
+            verb = text.split()[0] if text.startswith("/") else ""
+            if verb in ("/quit", "/exit", "/q"):
+                event.app.exit(result="quit")
+                return
+            # Suspend commands exit temporarily (need raw terminal)
+            if verb in ("/setup", "/roles"):
+                event.app.exit(result="suspend")
+                return
+
+            # Everything else: process in background, app stays open
+            event.app.create_background_task(self._process_input(text))
 
         @self._kb.add("c-c")
         def _(event):
@@ -387,7 +402,6 @@ class FullScreenTUI:
 
         # Async state
         self._pending_input: str | None = None
-        self._pending_suspend = None
         self._cancel_streaming = False
         self._running = True
 
@@ -616,6 +630,44 @@ class FullScreenTUI:
             record=True,
         ), buffer
 
+    # ── Input processing ──────────────────────────────────────────────
+
+    async def _process_input(self, text: str):
+        """Process user input as a background task while the app stays open.
+
+        For slash commands, delegates to _handle_command.
+        For chat messages, streams the AI response in real-time.
+        After processing, invalidates the display to refresh the chat.
+        """
+        try:
+            if text.startswith("/"):
+                await self._handle_command(text)
+            else:
+                # Natural language detection for setup intent
+                if self._is_setup_intent(text):
+                    self._add_system_message("Tip: type /setup to configure models")
+                    get_app().invalidate()
+                    return
+
+                self._add_user_message(text)
+                self.session.messages.append({"role": "user", "content": text})
+
+                effective_mode = self.session.mode
+                if effective_mode == "auto":
+                    effective_mode = detect_mode(text)
+
+                if effective_mode == "single":
+                    await self._stream_response(text)
+                else:
+                    await self._run_multi_agent(text)
+        except Exception as e:
+            self._add_error(f"Error: {e}")
+        finally:
+            try:
+                get_app().invalidate()
+            except Exception:
+                pass
+
     # ── Command handling ──────────────────────────────────────────────
 
     async def _handle_command(self, cmd: str) -> bool:
@@ -693,12 +745,12 @@ class FullScreenTUI:
 
         # ── Setup / Config ──
         if verb == "/setup":
-            await self._suspend_and_run(self._do_setup())
-            return "suspend"
+            await self._do_setup()
+            return True
 
         if verb == "/roles":
-            await self._suspend_and_run(self._do_roles())
-            return "suspend"
+            await self._do_roles()
+            return True
 
         if verb == "/compact":
             await self._do_compact()
@@ -837,13 +889,6 @@ class FullScreenTUI:
             f"Unknown command: {verb}. Type /help for available commands."
         )
         return True
-
-    # ── Raw terminal helpers (for interactive commands) ───────────────
-
-    async def _suspend_and_run(self, coro):
-        """Set a pending action and signal the app to exit temporarily."""
-        self._pending_suspend = coro
-        get_app().exit(result="suspend")
 
     # ── Interactive command implementations ────────────────────────────
 
@@ -1106,54 +1151,15 @@ class FullScreenTUI:
                 break
 
             if result == "suspend":
-                # App exited — run the pending interactive action
-                # (e.g., /setup or /roles) in raw terminal mode
-                if self._pending_suspend:
-                    try:
-                        await self._pending_suspend
-                    except (KeyboardInterrupt, asyncio.CancelledError):
-                        pass
-                    self._pending_suspend = None
-                # Loop back — restart the full-screen app
-                continue
-
-            if result == "input":
+                # App exited temporarily for /setup or /roles.
+                # Process the command in raw terminal, then restart the app.
                 user_input = self._pending_input
                 self._pending_input = None
+                if user_input:
+                    await self._handle_command(user_input)
+                continue
 
-                if not user_input:
-                    continue
-
-                # Handle slash commands
-                if user_input.startswith("/"):
-                    action = await self._handle_command(user_input)
-                    if action == "quit":
-                        break
-                    if action == "suspend":
-                        continue  # Handle in next iteration via the suspend result
-                    continue
-
-                # Detect setup-related natural language
-                if self._is_setup_intent(user_input):
-                    self._pending_suspend = self._do_setup()
-                    # Exit and re-enter app to run setup in raw terminal
-                    continue
-
-                # Process as chat message
-                self._add_user_message(user_input)
-                self.session.messages.append({"role": "user", "content": user_input})
-                # Stay in app for single-mode streaming
-                effective_mode = self.session.mode
-                if effective_mode == "auto":
-                    effective_mode = detect_mode(user_input)
-
-                if effective_mode == "single":
-                    await self._stream_response(user_input)
-                else:
-                    # Multi-agent: exit app, run, re-enter
-                    self._pending_suspend = self._run_multi_agent(user_input)
-                    continue
-
+            # App exited for any other reason — just restart (shouldn't happen)
         # Cleanup
         self._save_history()
 
